@@ -9,7 +9,7 @@ from flask import Flask
 from dotenv import load_dotenv
 
 # =========================
-# FLASK (Render keep alive)
+# FLASK
 # =========================
 
 app = Flask(__name__)
@@ -29,15 +29,8 @@ MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 SALON_REPORT = 1513274703572373504
 
-SALONS_SURVEILLES = {
-    1499033414358142977,
-    1500213292403134486
-}
-
-JSON_FILE = "toxicite.json"
-
 # =========================
-# DISCORD SETUP (IMPORTANT FIX)
+# DISCORD
 # =========================
 
 intents = discord.Intents.default()
@@ -48,46 +41,27 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# DEBUG CACHE REPORT
+# DEBUG REPORT CACHE
 # =========================
 
-report_cache = None
+report_channel = None
 
 async def get_report():
-    global report_cache
+    global report_channel
 
-    if report_cache:
-        return report_cache
+    if report_channel:
+        return report_channel
 
     try:
-        report_cache = await client.fetch_channel(SALON_REPORT)
-        return report_cache
+        report_channel = await client.fetch_channel(SALON_REPORT)
+        print("REPORT CHANNEL OK")
+        return report_channel
     except Exception as e:
-        print("REPORT ERROR FETCH:", e)
+        print("REPORT ERROR:", e)
         return None
 
 # =========================
-# JSON SAFE
-# =========================
-
-def load_scores():
-    if not os.path.exists(JSON_FILE):
-        return {}
-    try:
-        with open(JSON_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_scores(data):
-    try:
-        with open(JSON_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
-    except:
-        pass
-
-# =========================
-# IA MODERATION (REAL)
+# IA
 # =========================
 
 def analyze(content: str):
@@ -100,15 +74,15 @@ Tu es une IA de modération Discord.
 
 Analyse :
 - insultes
-- racisme direct ou indirect
-- moqueries agressives
-- généralisations
-- haine implicite
+- racisme
+- moqueries
+- harcèlement
+- haine directe ou indirecte
 
 Message:
 \"\"\"{content}\"\"\"
 
-Répond UNIQUEMENT JSON :
+Répond uniquement JSON :
 {{
  "delete": true/false,
  "score": 0.5 à 3,
@@ -128,7 +102,7 @@ Répond UNIQUEMENT JSON :
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.2
             },
-            timeout=8
+            timeout=10
         )
 
         data = r.json()
@@ -137,40 +111,35 @@ Répond UNIQUEMENT JSON :
         result = json.loads(text)
 
         return {
-            "delete": bool(result.get("delete", False)),
+            "delete": result.get("delete", False),
             "score": float(result.get("score", 0)),
             "reason": result.get("reason", "IA")
         }
 
     except Exception as e:
         print("IA ERROR:", e)
-        return {"delete": False, "score": 0, "reason": "ia_fail"}
+        return {"delete": False, "score": 0, "reason": "ia_error"}
 
 # =========================
-# EVENTS
+# EVENTS (IMPORTANT FIX)
 # =========================
 
 @client.event
 async def on_ready():
-    print(f"BOT CONNECTÉ : {client.user}")
+    print("BOT CONNECTÉ :", client.user)
 
 @client.event
 async def on_message(message):
 
+    # DEBUG OBLIGATOIRE
+    print("MESSAGE RECU:", message.content)
+
     if message.author.bot:
         return
 
-    print("MSG RECU:", message.content)  # DEBUG IMPORTANT
-
-    if message.channel.id not in SALONS_SURVEILLES:
-        return
-
-    scores = load_scores()
-    uid = str(message.author.id)
-
     result = analyze(message.content)
 
-    print("IA RESULT:", result)  # DEBUG
+    print("IA RESULT:", result)
 
     if not result["delete"]:
         return
@@ -179,11 +148,6 @@ async def on_message(message):
         await message.delete()
     except Exception as e:
         print("DELETE ERROR:", e)
-
-    scores[uid] = scores.get(uid, 0) + result["score"]
-    total = scores[uid]
-
-    save_scores(scores)
 
     report = await get_report()
 
@@ -198,7 +162,6 @@ async def on_message(message):
             embed.add_field(name="User", value=str(message.author), inline=False)
             embed.add_field(name="Reason", value=result["reason"], inline=False)
             embed.add_field(name="Score", value=str(result["score"]), inline=True)
-            embed.add_field(name="Total", value=str(total), inline=True)
             embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
             await report.send(embed=embed)
