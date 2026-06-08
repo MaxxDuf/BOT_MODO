@@ -2,6 +2,7 @@ import os
 import json
 import threading
 import re
+import unicodedata
 import requests
 from datetime import datetime
 
@@ -75,79 +76,100 @@ def sauvegarder_scores(data):
     try:
         with open(JSON_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
-    except Exception as e:
-        print("JSON error:", e)
+    except:
+        pass
 
 # =========================
-# FILTRE DUR
+# NORMALISATION ANTI-CONTOURNEMENT
 # =========================
 
-HARD_KEYWORDS = [
-    "trafic d'armes", "trafic d’armes",
-    "fdp", "connard", "enculé", "pute",
-    "ta mère", "ta mere", "tg", "nique",
-    "je vais te tuer", "arme", "viol"
-]
+def normaliser_texte(text: str):
+    text = text.lower()
 
-def hard_filter(text: str):
-    t = text.lower()
-    return any(w in t for w in HARD_KEYWORDS)
+    text = ''.join(
+        c for c in unicodedata.normalize('NFD', text)
+        if unicodedata.category(c) != 'Mn'
+    )
 
-# =========================
-# FALLBACK
-# =========================
-
-def fallback(text):
-    return {
-        "delete": False,
-        "score": 0,
-        "reason": "fallback"
+    replacements = {
+        "@": "a",
+        "0": "o",
+        "1": "i",
+        "$": "s",
+        "3": "e"
     }
 
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+
+    text = re.sub(r"\s+", " ", text)
+    return text
+
 # =========================
-# IA MISTRAL ULTRA STRICTE
+# HARD FILTER (SÉCURITÉ FORTE)
+# =========================
+
+HARD_HATE = [
+    "sale noir", "sale blanc", "sale arabe", "sale juif",
+    "retourne dans ton pays",
+    "nigger", "nigga",
+    "fdp", "connard", "encule", "pute",
+    "ta mere", "ta mère"
+]
+
+def hard_filter(text):
+    t = normaliser_texte(text)
+    return any(w in t for w in HARD_HATE)
+
+# =========================
+# IA FALLBACK
+# =========================
+
+def fallback():
+    return {"delete": False, "score": 0, "reason": "fallback"}
+
+# =========================
+# IA MODÉRATION
 # =========================
 
 def analyser_message(contenu: str):
 
-    # 1. FILTRE DUR
+    t = normaliser_texte(contenu)
+
+    # 🔥 OVERRIDE ABSOLU
     if hard_filter(contenu):
         return {
             "delete": True,
-            "score": 2.5,
-            "reason": "contenu critique"
+            "score": 3,
+            "reason": "contenu haineux détecté"
         }
 
     if not MISTRAL_API_KEY:
-        return fallback(contenu)
+        return fallback()
 
     prompt = f"""
 Tu es une IA de modération Discord ULTRA STRICTE.
 
 Tu dois détecter :
-- insultes directes
-- insultes implicites
+- insultes
+- racisme direct ou implicite
 - moqueries
-- sarcasme
-- double sens
-- humiliation
-- provocations
+- humiliations
+- sarcasme agressif
+- contournements (fautes, lettres modifiées)
 
-RÈGLE :
-Si le message est agressif, humiliant ou provocateur → delete = true
+RÈGLE ABSOLUE :
+Si doute → DELETE = TRUE
 
 Message :
 \"\"\"{contenu}\"\"\"
 
-Réponds UNIQUEMENT en JSON :
-
+Réponds UNIQUEMENT JSON :
 {{
   "delete": true/false,
   "score": 0.5 à 3,
   "reason": "catégorie"
 }}
-
-Si doute → delete = true
 """
 
     try:
@@ -168,11 +190,9 @@ Si doute → delete = true
         data = r.json()
         content = data["choices"][0]["message"]["content"]
 
-        try:
-            result = json.loads(content)
-        except:
-            return fallback(contenu)
+        result = json.loads(content)
 
+        # sécurité score minimum
         if result.get("delete") and float(result.get("score", 0)) < 1:
             result["score"] = 1.5
 
@@ -182,9 +202,8 @@ Si doute → delete = true
             "reason": result.get("reason", "IA")
         }
 
-    except Exception as e:
-        print("IA error:", e)
-        return fallback(contenu)
+    except:
+        return fallback()
 
 # =========================
 # EVENTS
@@ -216,21 +235,13 @@ async def on_message(message):
             scores[str(m.id)] = 0
 
         sauvegarder_scores(scores)
-        await message.channel.send("✅ Reset effectué")
+        await message.channel.send("✅ Reset OK")
         return
 
     if message.content.startswith("!score"):
         if message.mentions:
             u = str(message.mentions[0].id)
             await message.channel.send(f"📊 Score: {scores.get(u, 0)}")
-        return
-
-    if message.content.startswith("!toptoxic"):
-        top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]
-        msg = "🏆 Top toxicité :\n"
-        for u, s in top:
-            msg += f"- <@{u}> : {s}\n"
-        await message.channel.send(msg)
         return
 
     # =========================
@@ -259,21 +270,21 @@ async def on_message(message):
 
     if report:
         embed = discord.Embed(
-            title="🛡️MODÉRATION🛡️",
+            title="🚨 MODÉRATION IA",
             color=discord.Color.red(),
             timestamp=datetime.utcnow()
         )
 
-        embed.add_field(name="Utilisateur", value=f"{message.author}", inline=False)
+        embed.add_field(name="Utilisateur", value=str(message.author), inline=False)
         embed.add_field(name="Raison", value=result["reason"], inline=False)
         embed.add_field(name="Score ajouté", value=str(result["score"]), inline=True)
         embed.add_field(name="Score total", value=str(total), inline=True)
         embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
         if total >= SEUIL_CRITIQUE:
-            embed.add_field(name="⚠️ CRITIQUE", value="A bannir", inline=False)
+            embed.add_field(name="⚠️ CRITIQUE", value="Utilisateur très toxique", inline=False)
         elif total >= SEUIL_ALERTE:
-            embed.add_field(name="⚠️ ALERTE", value="A surveilleier", inline=False)
+            embed.add_field(name="⚠️ ALERTE", value="Surveillance active", inline=False)
 
         await report.send(embed=embed)
 
