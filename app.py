@@ -277,8 +277,8 @@ async def on_message(message):
 
     if report:
         embed = discord.Embed(
-            title="🚨 MODÉRATION IA",
-            color=discord.Color.red(),
+            title="🛡️MODÉRATION🛡️",
+            color=discord.Color.bleu(),
             timestamp=datetime.utcnow()
         )
 
