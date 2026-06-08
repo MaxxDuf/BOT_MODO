@@ -1,6 +1,9 @@
 import os
 import threading
 from flask import Flask
+from mistralai.client import MistralClient
+
+mistral = MistralClient(api_key=MISTRAL_KEY)
 
 import discord
 from discord.ext import commands
