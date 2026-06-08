@@ -2,7 +2,6 @@ import os
 import json
 import threading
 import re
-import unicodedata
 import requests
 from datetime import datetime
 
@@ -59,13 +58,11 @@ MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.guilds = True
-intents.members = True
 
 client = discord.Client(intents=intents)
 
 # =========================
-# REPORT CHANNEL
+# REPORT CACHE
 # =========================
 
 report_channel_cache = None
@@ -83,7 +80,7 @@ async def get_report_channel():
         return None
 
 # =========================
-# JSON
+# SCORES
 # =========================
 
 def charger_scores():
@@ -96,38 +93,11 @@ def charger_scores():
         return {}
 
 def sauvegarder_scores(data):
-    try:
-        with open(JSON_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
-    except:
-        pass
+    with open(JSON_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
 
 # =========================
-# TEXT CLEAN
-# =========================
-
-def normaliser_texte(text: str):
-    text = text.lower()
-    text = ''.join(
-        c for c in unicodedata.normalize('NFD', text)
-        if unicodedata.category(c) != 'Mn'
-    )
-    text = re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ\s]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-# =========================
-# FILTRE RAPIDE
-# =========================
-
-HATE = ["connard", "fdp", "pute", "encule"]
-
-def hard_filter(text):
-    t = normaliser_texte(text)
-    return any(x in t for x in HATE)
-
-# =========================
-# IA MISTRAL
+# IA UNIQUE (FIXÉE)
 # =========================
 
 def analyser_message_ia(content: str):
@@ -144,42 +114,83 @@ def analyser_message_ia(content: str):
         payload = {
             "model": MISTRAL_MODEL,
             "messages": [
-                {"role": "system", "content": "Répond uniquement JSON {delete,score,reason}"},
-                {"role": "user", "content": content}
+                {
+                    "role": "system",
+                    "content": """
+Tu es un modérateur Discord.
+
+Décide si le message doit être supprimé.
+
+Supprime uniquement :
+- insultes graves
+- harcèlement
+- menaces
+- racisme
+- discrimination
+- haine
+
+Réponds UNIQUEMENT en JSON :
+
+{
+  "delete": true,
+  "score": 3,
+  "reason": "raison courte"
+}
+
+ou
+
+{
+  "delete": false,
+  "score": 0,
+  "reason": "ok"
+}
+"""
+                },
+                {
+                    "role": "user",
+                    "content": content
+                }
             ],
-            "temperature": 0.2
+            "temperature": 0.1
         }
 
         r = requests.post(
             "https://api.mistral.ai/v1/chat/completions",
             headers=headers,
             json=payload,
-            timeout=10
+            timeout=15
         )
 
         data = r.json()
         text = data["choices"][0]["message"]["content"]
 
-        return json.loads(text)
+        match = re.search(r"\{.*\}", text, re.DOTALL)
 
-    except:
+        if not match:
+            return None
+
+        return json.loads(match.group())
+
+    except Exception as e:
+        print("IA ERROR:", e)
         return None
 
 # =========================
-# ANALYSE
+# ANALYSE FINAL
 # =========================
 
 def analyser_message(content: str):
-
-    if hard_filter(content):
-        return {"delete": True, "score": 3, "reason": "filtre local"}
 
     result = analyser_message_ia(content)
 
     if result:
         return result
 
-    return {"delete": False, "score": 0, "reason": "fallback"}
+    return {
+        "delete": False,
+        "score": 0,
+        "reason": "IA indisponible"
+    }
 
 # =========================
 # READY
@@ -191,7 +202,7 @@ async def on_ready():
     print(client.user)
 
 # =========================
-# MAIN LOGIC
+# MAIN
 # =========================
 
 @client.event
@@ -200,13 +211,13 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    content = (message.content or "").strip()
+    content = message.content or ""
     uid = str(message.author.id)
 
     scores = charger_scores()
 
     # =========================
-    # 1) MODÉRATION (PRIORITÉ ABSOLUE)
+    # MODERATION
     # =========================
     if message.channel.id in SALONS_SURVEILLES:
 
@@ -225,71 +236,62 @@ async def on_message(message):
             report = await get_report_channel()
 
             if report:
-                try:
-                    embed = discord.Embed(
-                        title="⚠️MODÉRATION⚠️",
-                        color=discord.Color.red(),
-                        timestamp=datetime.utcnow()
-                    )
+                embed = discord.Embed(
+                    title="🚨 MODÉRATION IA",
+                    color=discord.Color.red(),
+                    timestamp=datetime.utcnow()
+                )
 
-                    embed.add_field(name="User", value=str(message.author), inline=False)
-                    embed.add_field(name="Raison", value=result.get("reason", "unknown"), inline=False)
-                    embed.add_field(name="Score", value=str(scores[uid]), inline=True)
-                    embed.add_field(name="Message", value=content[:1000], inline=False)
+                embed.add_field(name="User", value=str(message.author), inline=False)
+                embed.add_field(name="Raison", value=result.get("reason", "unknown"), inline=False)
+                embed.add_field(name="Score", value=str(scores[uid]), inline=True)
+                embed.add_field(name="Message", value=content[:1000], inline=False)
 
-                    await report.send(embed=embed)
-
-                except:
-                    pass
+                await report.send(embed=embed)
 
             return
 
     # =========================
-    # 2) COMMANDES (UNIQUEMENT SALON REPORT)
+    # COMMANDES
     # =========================
     if message.channel.id != SALON_REPORT:
         return
 
-    # 📊 SCORE
+    # !score
     if content.lower() == "!score":
 
         if not scores:
             await message.channel.send("📊 Aucun score.")
             return
 
-        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        msg = "📊 Classement :\n"
 
-        msg = "📊 **Classement :**\n"
-
-        for user_id, score in sorted_scores[:15]:
+        for user_id, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
             msg += f"- <@{user_id}> : {score}\n"
 
         await message.channel.send(msg)
         return
 
-    # 🧹 RESET
+    # !reset
     if content.lower().startswith("!reset"):
 
         if str(message.author.id) not in FONDATEURS:
-            await message.channel.send("🔒")
+            await message.channel.send("🔒 pas permission")
             return
 
-        args = content.split()
+        args = message.content.split()
 
         if len(args) == 1:
             scores[uid] = 0
             sauvegarder_scores(scores)
-            await message.channel.send("✅ Reset OK")
+            await message.channel.send("✅ reset OK")
             return
 
         if len(args) == 2:
-            try:
-                target = args[1].replace("<@", "").replace(">", "").replace("!", "")
-                scores[target] = 0
-                sauvegarder_scores(scores)
-                await message.channel.send("✅ User reset")
-            except:
-                await message.channel.send("❌ erreur")
+            target = args[1].replace("<@", "").replace(">", "").replace("!", "")
+            scores[target] = 0
+            sauvegarder_scores(scores)
+            await message.channel.send("✅ user reset")
             return
 
 # =========================
