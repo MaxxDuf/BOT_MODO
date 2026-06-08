@@ -62,7 +62,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# JSON SAFE
+# JSON
 # =========================
 
 def charger_scores():
@@ -82,87 +82,72 @@ def sauvegarder_scores(data):
         pass
 
 # =========================
+# ROLE CHECK
+# =========================
+
+def est_fondateur(member: discord.Member):
+    return any(role.name == "Fondateur" for role in member.roles)
+
+# =========================
 # NORMALISATION
 # =========================
 
 def normaliser_texte(text: str):
     text = text.lower()
-
     text = ''.join(
         c for c in unicodedata.normalize('NFD', text)
         if unicodedata.category(c) != 'Mn'
     )
-
-    text = text.replace("@", "a").replace("0", "o").replace("1", "i").replace("$", "s").replace("3", "e")
     text = re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ\s]", " ", text)
     text = re.sub(r"\s+", " ", text)
-
     return text.strip()
 
 # =========================
-# HATE PATTERNS
+# FILTRE HAINE
 # =========================
 
-HATE_PATTERNS = [
-    "sale noir", "sale blanc", "sale arabe", "sale juif",
-    "nigger", "nigga", "fdp", "connard", "encule", "pute",
-    "vous les noirs", "vous les arabes", "vous les blancs",
-    "les noirs sont", "les arabes sont", "les blancs sont",
+HATE = [
+    "sale noir", "sale blanc", "nigga", "nigger",
+    "vous les noirs", "vous les blancs",
+    "les noirs sont", "les blancs sont",
     "vous etes tous des voleurs",
-    "ils sont tous des voleurs",
     "retourne dans ton pays",
+    "fdp", "connard", "encule", "pute"
 ]
 
 def hard_filter(text):
     t = normaliser_texte(text)
-    return any(p in t for p in HATE_PATTERNS)
+    return any(x in t for x in HATE)
 
 # =========================
-# IA FALLBACK
+# IA
 # =========================
 
-def fallback():
-    return {"delete": False, "score": 0, "reason": "fallback"}
+def analyser_message(content: str):
 
-# =========================
-# IA MODERATION
-# =========================
-
-def analyser_message(contenu: str):
-
-    t = normaliser_texte(contenu)
-
-    if hard_filter(contenu):
-        return {
-            "delete": True,
-            "score": 3,
-            "reason": "contenu haineux détecté"
-        }
+    if hard_filter(content):
+        return {"delete": True, "score": 3, "reason": "contenu haineux"}
 
     if not MISTRAL_API_KEY:
-        return fallback()
+        return {"delete": False, "score": 0, "reason": "no ai"}
 
     prompt = f"""
-Tu es une IA de modération ULTRA STRICTE Discord.
+Modération Discord stricte.
 
 Détecte :
 - insultes
-- racisme explicite ou implicite
-- généralisations sur des groupes
-- stéréotypes
-- humiliations
-- sarcasme agressif
-
-Si doute → delete = true
+- racisme direct/indirect
+- généralisations
+- haine
 
 Message:
-\"\"\"{contenu}\"\"\"
+\"\"\"{content}\"\"\"
 
-Réponds UNIQUEMENT JSON :
+Répond JSON:
 {{
-  "delete": true/false,
-  "score": 0.5 à 3,
-  "reason": "catégorie"
+ "delete": true/false,
+ "score": 0.5 à 3,
+ "reason": "type"
 }}
 """
 
@@ -182,20 +167,16 @@ Réponds UNIQUEMENT JSON :
         )
 
         data = r.json()
-        content = data["choices"][0]["message"]["content"]
-        result = json.loads(content)
-
-        if result.get("delete") and float(result.get("score", 0)) < 1:
-            result["score"] = 1.5
+        result = json.loads(data["choices"][0]["message"]["content"])
 
         return {
-            "delete": bool(result.get("delete", False)),
+            "delete": result.get("delete", False),
             "score": float(result.get("score", 0)),
             "reason": result.get("reason", "IA")
         }
 
     except:
-        return fallback()
+        return {"delete": False, "score": 0, "reason": "error"}
 
 # =========================
 # EVENTS
@@ -215,10 +196,14 @@ async def on_message(message):
     uid = str(message.author.id)
 
     # =========================
-    # COMMANDES
+    # COMMANDES SECURISEES
     # =========================
 
     if message.content.startswith("!reset"):
+        if not est_fondateur(message.author):
+            await message.channel.send("❌ Permission refusée")
+            return
+
         if not message.mentions:
             await message.channel.send("❌ Mentionne un utilisateur")
             return
@@ -231,13 +216,20 @@ async def on_message(message):
         return
 
     if message.content.startswith("!score"):
-        if message.mentions:
-            u = str(message.mentions[0].id)
-            await message.channel.send(f"📊 Score: {scores.get(u, 0)}")
+        if not est_fondateur(message.author):
+            await message.channel.send("❌ Permission refusée")
+            return
+
+        if not message.mentions:
+            await message.channel.send("❌ Mentionne un utilisateur")
+            return
+
+        u = str(message.mentions[0].id)
+        await message.channel.send(f"📊 Score: {scores.get(u, 0)}")
         return
 
     # =========================
-    # FILTRE SALONS
+    # SALONS
     # =========================
 
     if message.channel.id not in SALONS_SURVEILLES:
@@ -259,7 +251,7 @@ async def on_message(message):
     sauvegarder_scores(scores)
 
     # =========================
-    # FIX IMPORTANT REPORT CHANNEL
+    # REPORT FIX
     # =========================
 
     try:
@@ -276,19 +268,11 @@ async def on_message(message):
 
         embed.add_field(name="Utilisateur", value=str(message.author), inline=False)
         embed.add_field(name="Raison", value=result["reason"], inline=False)
-        embed.add_field(name="Score ajouté", value=str(result["score"]), inline=True)
-        embed.add_field(name="Score total", value=str(total), inline=True)
+        embed.add_field(name="Score", value=str(result["score"]), inline=True)
+        embed.add_field(name="Total", value=str(total), inline=True)
         embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
-        if total >= SEUIL_CRITIQUE:
-            embed.add_field(name="⚠️ CRITIQUE", value="Utilisateur très toxique", inline=False)
-        elif total >= SEUIL_ALERTE:
-            embed.add_field(name="⚠️ ALERTE", value="Surveillance", inline=False)
-
-        try:
-            await report.send(embed=embed)
-        except Exception as e:
-            print("Send error:", e)
+        await report.send(embed=embed)
 
 # =========================
 # RUN
