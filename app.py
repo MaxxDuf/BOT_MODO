@@ -201,7 +201,7 @@ async def on_message(message):
 
     if message.content.startswith("!reset"):
         if not est_fondateur(message.author):
-            await message.channel.send("❌ Permission refusée")
+            await message.channel.send("❌ T'a essayer quoi là 🔐")
             return
 
         if not message.mentions:
@@ -217,7 +217,7 @@ async def on_message(message):
 
     if message.content.startswith("!score"):
         if not est_fondateur(message.author):
-            await message.channel.send("❌ Permission refusée")
+            await message.channel.send("❌ Bien essayer")
             return
 
         if not message.mentions:
@@ -261,8 +261,8 @@ async def on_message(message):
 
     if report:
         embed = discord.Embed(
-            title="🚨 MODÉRATION IA",
-            color=discord.Color.red(),
+            title="🛡️MODÉRATION🛡️",
+            color=discord.Color.bleu(),
             timestamp=datetime.utcnow()
         )
 
