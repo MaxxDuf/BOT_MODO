@@ -37,6 +37,8 @@ SALONS_SURVEILLES = {
 
 JSON_FILE = "toxicite.json"
 
+MISTRAL_MODEL = "mistral-small-latest"
+
 # =========================
 # ENV
 # =========================
@@ -112,7 +114,7 @@ def normaliser_texte(text: str):
     return text.strip()
 
 # =========================
-# FILTRE SIMPLE (SECURITE)
+# FILTRE SIMPLE (SECURITE RAPIDE)
 # =========================
 
 HATE = [
@@ -128,15 +130,88 @@ def hard_filter(text):
     return any(x in t for x in HATE)
 
 # =========================
-# IA SIMPLE (fallback si pas clé)
+# IA MISTRAL
+# =========================
+
+def analyser_message_ia(content: str):
+
+    if not MISTRAL_API_KEY:
+        return None
+
+    try:
+        headers = {
+            "Authorization": f"Bearer {MISTRAL_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        system_prompt = """
+Tu es un modérateur Discord.
+
+Répond UNIQUEMENT en JSON valide:
+{
+  "delete": true/false,
+  "score": 0-3,
+  "reason": "courte raison"
+}
+
+Règles:
+- delete=true si haine, insultes, harcèlement, discrimination
+- score 3 = très grave
+- score 1-2 = léger
+- score 0 = ok
+"""
+
+        payload = {
+            "model": MISTRAL_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content}
+            ],
+            "temperature": 0.2
+        }
+
+        r = requests.post(
+            "https://api.mistral.ai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+
+        data = r.json()
+        text = data["choices"][0]["message"]["content"]
+
+        return json.loads(text)
+
+    except Exception as e:
+        print("❌ IA Mistral erreur:", e)
+        return None
+
+# =========================
+# ANALYSE PRINCIPALE
 # =========================
 
 def analyser_message(content: str):
 
+    # sécurité locale immédiate
     if hard_filter(content):
-        return {"delete": True, "score": 3, "reason": "contenu haineux"}
+        return {
+            "delete": True,
+            "score": 3,
+            "reason": "contenu haineux (filtre local)"
+        }
 
-    return {"delete": False, "score": 0, "reason": "clean"}
+    # IA
+    result = analyser_message_ia(content)
+
+    if result:
+        return result
+
+    # fallback
+    return {
+        "delete": False,
+        "score": 0,
+        "reason": "clean (fallback)"
+    }
 
 # =========================
 # EVENTS
@@ -152,15 +227,11 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    scores = charger_scores()
-    uid = str(message.author.id)
-
-    # =========================
-    # FILTRE SALONS
-    # =========================
-
     if message.channel.id not in SALONS_SURVEILLES:
         return
+
+    scores = charger_scores()
+    uid = str(message.author.id)
 
     result = analyser_message(message.content)
 
@@ -174,19 +245,14 @@ async def on_message(message):
 
     scores[uid] = scores.get(uid, 0) + result["score"]
     total = scores[uid]
-
     sauvegarder_scores(scores)
-
-    # =========================
-    # REPORT FIX ULTRA FIABLE
-    # =========================
 
     report = await get_report_channel()
 
-    if report is not None:
+    if report:
         try:
             embed = discord.Embed(
-                title="🚨 MODÉRATION",
+                title="🚨 MODÉRATION IA",
                 color=discord.Color.red(),
                 timestamp=datetime.utcnow()
             )
@@ -199,9 +265,7 @@ async def on_message(message):
             await report.send(embed=embed)
 
         except Exception as e:
-            print("❌ Erreur envoi report:", e)
-    else:
-        print("❌ Salon report introuvable")
+            print("❌ Erreur report:", e)
 
 # =========================
 # RUN
