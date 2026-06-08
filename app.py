@@ -227,8 +227,8 @@ async def on_message(message):
             if report:
                 try:
                     embed = discord.Embed(
-                        title="📢MODÉRATION⚠️",
-                        color=discord.Color.bleu(),
+                        title="⚠️MODÉRATION⚠️",
+                        color=discord.Color.red(),
                         timestamp=datetime.utcnow()
                     )
 
@@ -279,7 +279,7 @@ async def on_message(message):
         if len(args) == 1:
             scores[uid] = 0
             sauvegarder_scores(scores)
-            await message.channel.send("🗘remise a zéro confirmer🗘")
+            await message.channel.send("✅ Reset OK")
             return
 
         if len(args) == 2:
@@ -287,9 +287,9 @@ async def on_message(message):
                 target = args[1].replace("<@", "").replace(">", "").replace("!", "")
                 scores[target] = 0
                 sauvegarder_scores(scores)
-                await message.channel.send("🗘remise a zéro confirmer🗘")
+                await message.channel.send("✅ User reset")
             except:
-                await message.channel.send("📢❗🚨 erreur")
+                await message.channel.send("❌ erreur")
             return
 
 # =========================
