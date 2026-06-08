@@ -227,8 +227,8 @@ async def on_message(message):
             if report:
                 try:
                     embed = discord.Embed(
-                        title="🚨 MODÉRATION IA",
-                        color=discord.Color.red(),
+                        title="📢MODÉRATION⚠️",
+                        color=discord.Color.bleu(),
                         timestamp=datetime.utcnow()
                     )
 
@@ -271,7 +271,7 @@ async def on_message(message):
     if content.lower().startswith("!reset"):
 
         if str(message.author.id) not in FONDATEURS:
-            await message.channel.send("🔒 Pas permission.")
+            await message.channel.send("🔒")
             return
 
         args = content.split()
@@ -279,7 +279,7 @@ async def on_message(message):
         if len(args) == 1:
             scores[uid] = 0
             sauvegarder_scores(scores)
-            await message.channel.send("✅ Reset OK")
+            await message.channel.send("🗘remise a zéro confirmer🗘")
             return
 
         if len(args) == 2:
@@ -287,9 +287,9 @@ async def on_message(message):
                 target = args[1].replace("<@", "").replace(">", "").replace("!", "")
                 scores[target] = 0
                 sauvegarder_scores(scores)
-                await message.channel.send("✅ User reset")
+                await message.channel.send("🗘remise a zéro confirmer🗘")
             except:
-                await message.channel.send("❌ erreur")
+                await message.channel.send("📢❗🚨 erreur")
             return
 
 # =========================
