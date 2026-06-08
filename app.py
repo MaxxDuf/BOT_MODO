@@ -2,6 +2,7 @@ import os
 import json
 import threading
 import re
+import requests
 from datetime import datetime
 
 import discord
@@ -34,14 +35,15 @@ SEUIL_CRITIQUE = 20
 
 JSON_FILE = "toxicite.json"
 
-SERVEUR_ID = 1513274703572373504  # pour commandes admin
-
 # =========================
 # ENV
 # =========================
 
 load_dotenv()
+
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-small")
 
 # =========================
 # DISCORD
@@ -55,7 +57,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# JSON
+# JSON SCORE
 # =========================
 
 def charger_scores():
@@ -74,76 +76,94 @@ def sauvegarder_scores(data):
         json.dump(data, f, indent=4)
 
 # =========================
-# DETECTION AVANCÉE
+# FALLBACK SIMPLE (si IA fail)
 # =========================
 
-CATEGORIES = {
-    "insulte": {
-        "patterns": [
-            r"\bcon(nard)?\b",
-            r"\bfdp\b",
-            r"\bencul(e|é)\b",
-            r"\bsalope\b",
-            r"\bpute\b",
-        ],
-        "score": 1
-    },
+REGEX_FALLBACK = [
+    (r"\bcon(nard)?\b", 1),
+    (r"\bfdp\b", 1),
+    (r"\bencul(e|é)\b", 1),
+    (r"ta mère", 0.5),
+    (r"ta gueule", 1.5),
+    (r"je vais te tuer", 3),
+]
 
-    "moquerie": {
-        "patterns": [
-            r"ta mère",
-            r"ta mere",
-            r"t'es nul",
-            r"t es nul",
-            r"mdr t'es",
-            r"haha t'es",
-        ],
-        "score": 0.5
-    },
+def fallback_analyse(text):
+    t = text.lower()
+    for pattern, score in REGEX_FALLBACK:
+        if re.search(pattern, t):
+            return {
+                "delete": True,
+                "score": score,
+                "reason": "fallback détection"
+            }
 
-    "harcelement_leger": {
-        "patterns": [
-            r"tg\b",
-            r"ta gueule",
-            r"ferme[- ]?la",
-        ],
-        "score": 1.5
-    },
+    return {"delete": False, "score": 0, "reason": "OK"}
 
-    "discrimination": {
-        "patterns": [
-            r"sale (noir|blanc|arabe|juif|femme|gars)",
-        ],
-        "score": 3
-    },
-
-    "menace": {
-        "patterns": [
-            r"je vais te frapper",
-            r"je vais te tuer",
-            r"t'es mort",
-        ],
-        "score": 3
-    }
-}
+# =========================
+# IA MISTRAL
+# =========================
 
 def analyser_message(contenu: str):
-    texte = contenu.lower()
 
-    for categorie, data in CATEGORIES.items():
-        for pattern in data["patterns"]:
-            if re.search(pattern, texte):
-                return {
-                    "delete": True,
-                    "score": data["score"],
-                    "reason": f"{categorie} détecté"
-                }
+    # si pas de clé → fallback
+    if not MISTRAL_API_KEY:
+        return fallback_analyse(contenu)
 
-    return {
-        "delete": False,
-        "score": 0,
-        "reason": "Aucun problème"
-    }
+    prompt = f"""
+Tu es un modérateur Discord très strict.
+
+Analyse ce message :
+
+\"\"\"{contenu}\"\"\"
+
+Détecte :
+- insultes
+- moqueries
+- harcèlement
+- discrimination
+- menaces
+
+Réponds UNIQUEMENT en JSON :
+
+{{
+  "delete": true/false,
+  "score": 0.5 à 3,
+  "reason": "catégorie courte"
+}}
+"""
+
+    try:
+        response = requests.post(
+            "https://api.mistral.ai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {MISTRAL_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": MISTRAL_MODEL,
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.2
+            },
+            timeout=6
+        )
+
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
+
+        result = json.loads(content)
+
+        return {
+            "delete": bool(result.get("delete", False)),
+            "score": float(result.get("score", 0)),
+            "reason": result.get("reason", "IA")
+        }
+
+    except Exception as e:
+        print("IA error:", e)
+        return fallback_analyse(contenu)
 
 # =========================
 # EVENTS
@@ -168,17 +188,15 @@ async def on_message(message):
 
     if message.content.startswith("!reset"):
         if message.mentions:
-            cible = str(message.mentions[0].id)
-            scores[cible] = 0
+            scores[str(message.mentions[0].id)] = 0
             sauvegarder_scores(scores)
-            await message.channel.send(f"✅ Score remis à zéro pour {message.mentions[0].mention}")
+            await message.channel.send("✅ Score reset")
         return
 
     if message.content.startswith("!score"):
         if message.mentions:
-            cible = str(message.mentions[0].id)
-            score = scores.get(cible, 0)
-            await message.channel.send(f"📊 Score de toxicité : {score}")
+            uid = str(message.mentions[0].id)
+            await message.channel.send(f"📊 Score: {scores.get(uid, 0)}")
         return
 
     if message.content.startswith("!toptoxic"):
@@ -196,23 +214,20 @@ async def on_message(message):
     if message.channel.id not in SALONS_SURVEILLES:
         return
 
-    resultat = analyser_message(message.content)
+    result = analyser_message(message.content)
 
-    if not resultat["delete"]:
+    if not result["delete"]:
         return
-
-    score = float(resultat["score"])
-    reason = resultat["reason"]
 
     try:
         await message.delete()
-    except Exception as e:
-        print("Suppression impossible :", e)
+    except:
+        pass
 
     if user_id not in scores:
         scores[user_id] = 0
 
-    scores[user_id] += score
+    scores[user_id] += result["score"]
     total = scores[user_id]
 
     sauvegarder_scores(scores)
@@ -222,35 +237,31 @@ async def on_message(message):
     if report_channel:
 
         embed = discord.Embed(
-            title="🚨 Message supprimé",
+            title="🚨 Modération IA",
             color=discord.Color.red(),
             timestamp=datetime.utcnow()
         )
 
         embed.add_field(name="Utilisateur", value=f"{message.author} ({message.author.id})", inline=False)
         embed.add_field(name="Salon", value=message.channel.mention, inline=False)
-        embed.add_field(name="Raison", value=reason, inline=False)
-        embed.add_field(name="Score ajouté", value=str(score), inline=True)
+        embed.add_field(name="Raison", value=result["reason"], inline=False)
+        embed.add_field(name="Score ajouté", value=str(result["score"]), inline=True)
         embed.add_field(name="Score total", value=str(total), inline=True)
         embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
         if total >= SEUIL_CRITIQUE:
             embed.add_field(name="⚠️ CRITIQUE", value="Utilisateur très toxique", inline=False)
         elif total >= SEUIL_ALERTE:
-            embed.add_field(name="⚠️ ALERTE", value="Surveillance recommandée", inline=False)
+            embed.add_field(name="⚠️ ALERTE", value="Surveillance", inline=False)
 
         await report_channel.send(embed=embed)
 
 # =========================
-# BOT
+# BOT + FLASK
 # =========================
 
 def run_bot():
     client.run(DISCORD_TOKEN)
-
-# =========================
-# START
-# =========================
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot).start()
