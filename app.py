@@ -43,7 +43,8 @@ MISTRAL_MODEL = "mistral-small-latest"
 # 👑 FONDATEURS (IMPORTANT FIX)
 # =========================
 FONDATEURS = {
-    "TON_ID_DISCORD_ICI"   # <-- mets ton ID en string
+    "1275136312935977013",
+    "1272599276538691750"
 }
 
 # =========================
