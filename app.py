@@ -63,8 +63,7 @@ client = discord.Client(intents=intents)
 
 def charger_scores():
     if not os.path.exists(JSON_FILE):
-        with open(JSON_FILE, "w", encoding="utf-8") as f:
-            json.dump({}, f)
+        return {}
 
     try:
         with open(JSON_FILE, "r", encoding="utf-8") as f:
@@ -91,52 +90,61 @@ def normaliser_texte(text: str):
         if unicodedata.category(c) != 'Mn'
     )
 
-    replacements = {
-        "@": "a",
-        "0": "o",
-        "1": "i",
-        "$": "s",
-        "3": "e"
-    }
+    text = text.replace("@", "a").replace("0", "o").replace("1", "i").replace("$", "s").replace("3", "e")
 
-    for k, v in replacements.items():
-        text = text.replace(k, v)
-
+    text = re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ\s]", " ", text)
     text = re.sub(r"\s+", " ", text)
-    return text
+
+    return text.strip()
 
 # =========================
-# HARD FILTER (SÉCURITÉ FORTE)
+# HATE PATTERNS (RACISME + GENERALISATION)
 # =========================
 
-HARD_HATE = [
+HATE_PATTERNS = [
+    # insultes directes
     "sale noir", "sale blanc", "sale arabe", "sale juif",
+    "nigger", "nigga", "fdp", "connard", "encule", "pute",
+
+    # racisme implicite
+    "vous les noirs", "vous les blanc", "vous les arabes",
+    "les noirs sont", "les blancs sont", "les arabes sont",
+
+    # généralisations
+    "vous etes tous des voleurs",
+    "ils sont tous des voleurs",
+    "vous etes tous pareils",
+    "ils sont tous pareils",
+
+    # exclusion
     "retourne dans ton pays",
-    "nigger", "nigga",
-    "fdp", "connard", "encule", "pute",
-    "ta mere", "ta mère"
+    "vous n avez rien a faire ici"
 ]
+
+# =========================
+# HARD FILTER
+# =========================
 
 def hard_filter(text):
     t = normaliser_texte(text)
-    return any(w in t for w in HARD_HATE)
+    return any(p in t for p in HATE_PATTERNS)
 
 # =========================
-# IA FALLBACK
+# FALLBACK
 # =========================
 
 def fallback():
     return {"delete": False, "score": 0, "reason": "fallback"}
 
 # =========================
-# IA MODÉRATION
+# IA MODERATION
 # =========================
 
 def analyser_message(contenu: str):
 
     t = normaliser_texte(contenu)
 
-    # 🔥 OVERRIDE ABSOLU
+    # 🔥 OVERRIDE ABSOLU LOCAL
     if hard_filter(contenu):
         return {
             "delete": True,
@@ -153,12 +161,12 @@ Tu es une IA de modération Discord ULTRA STRICTE.
 Tu dois détecter :
 - insultes
 - racisme direct ou implicite
-- moqueries
-- humiliations
-- sarcasme agressif
-- contournements (fautes, lettres modifiées)
+- généralisations sur des groupes ("vous les X êtes tous...")
+- stéréotypes
+- humiliation
+- provocations
 
-RÈGLE ABSOLUE :
+RÈGLE :
 Si doute → DELETE = TRUE
 
 Message :
@@ -192,7 +200,6 @@ Réponds UNIQUEMENT JSON :
 
         result = json.loads(content)
 
-        # sécurité score minimum
         if result.get("delete") and float(result.get("score", 0)) < 1:
             result["score"] = 1.5
 
@@ -223,7 +230,7 @@ async def on_message(message):
     uid = str(message.author.id)
 
     # =========================
-    # COMMANDES
+    # COMMANDES RESET / SCORE
     # =========================
 
     if message.content.startswith("!reset"):
@@ -235,7 +242,7 @@ async def on_message(message):
             scores[str(m.id)] = 0
 
         sauvegarder_scores(scores)
-        await message.channel.send("✅ Reset OK")
+        await message.channel.send("✅ Reset effectué")
         return
 
     if message.content.startswith("!score"):
@@ -284,7 +291,7 @@ async def on_message(message):
         if total >= SEUIL_CRITIQUE:
             embed.add_field(name="⚠️ CRITIQUE", value="Utilisateur très toxique", inline=False)
         elif total >= SEUIL_ALERTE:
-            embed.add_field(name="⚠️ ALERTE", value="Surveillance active", inline=False)
+            embed.add_field(name="⚠️ ALERTE", value="Surveillance", inline=False)
 
         await report.send(embed=embed)
 
