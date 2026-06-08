@@ -1,148 +1,148 @@
 import os
-import json
-import requests
 import discord
-from dotenv import load_dotenv
-from datetime import datetime
+from discord.ext import commands
+from mistralai import Mistral
 
-# =========================
-# ENV
-# =========================
+# ================= CONFIG =================
+TOKEN = os.getenv("DISCORD_TOKEN")
+MISTRAL_KEY = os.getenv("MISTRAL_API_KEY")
 
-load_dotenv()
+REPORT_CHANNEL_ID = 1513274703572373504
+FOUNDER_ROLE_NAME = "Fondateur"
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
-
-SALON_REPORT = 1513274703572373504
-FILE = "data.json"
-
-# =========================
-# DISCORD
-# =========================
-
+# ================= INTENTS (IMPORTANT) =================
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True
+intents.messages = True
 
-client = discord.Client(intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# =========================
-# DATA
-# =========================
+# ================= STOCKAGE =================
+user_scores = {}
 
-def load():
-    if not os.path.exists(FILE):
-        return {}
-    with open(FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+# ================= IA =================
+client = Mistral(api_key=MISTRAL_KEY) if MISTRAL_KEY else None
 
-def save(data):
-    with open(FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
 
-# =========================
-# IA (MISTRAL)
-# =========================
+def fallback_score(text: str) -> float:
+    """Sécurité si IA HS"""
+    t = text.lower()
 
-def ia_check(text):
+    bad_keywords = [
+        "insulte", "idiot", "nul", "hate", "trafiq", "armes"
+    ]
 
-    if not MISTRAL_API_KEY:
-        return {"delete": False, "score": 0, "reason": "no_key"}
+    if any(k in t for k in bad_keywords):
+        return 2.7
 
-    prompt = f"""
-Tu es une IA de modération Discord.
+    return 0.2
 
-Détecte insultes, haine, racisme, harcèlement, moqueries.
+
+async def ai_moderation(text: str) -> float:
+    """
+    Retourne un score entre 0 et 3 :
+    0 = safe
+    3 = très toxique
+    """
+
+    if not client:
+        return fallback_score(text)
+
+    try:
+        prompt = f"""
+Tu es un système de modération.
+Analyse ce message et retourne UNIQUEMENT un nombre entre 0 et 3.
+
+Règles :
+0 = clean
+1 = léger doute
+2 = insultes / toxicité
+3 = haine / racisme / illégal / grave
 
 Message:
 {text}
-
-Répond JSON uniquement:
-{{"delete": true, "score": 0.5, "reason": "court"}}
 """
 
-    try:
-        r = requests.post(
-            "https://api.mistral.ai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {MISTRAL_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "mistral-small",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.2
-            },
-            timeout=10
+        res = client.chat.complete(
+            model="mistral-small-latest",
+            messages=[{"role": "user", "content": prompt}]
         )
 
-        text = r.json()["choices"][0]["message"]["content"]
-        result = json.loads(text)
+        output = res.choices[0].message.content.strip()
 
-        return {
-            "delete": result.get("delete", False),
-            "score": float(result.get("score", 0)),
-            "reason": result.get("reason", "ia")
-        }
+        # sécurité parsing
+        score = float("".join(c for c in output if c in "0123456789."))
+        return max(0, min(3, score))
 
-    except Exception as e:
-        print("IA ERROR:", e)
-        return {"delete": False, "score": 0, "reason": "error"}
+    except:
+        return fallback_score(text)
 
-# =========================
-# EVENTS
-# =========================
 
-@client.event
-async def on_ready():
-    print("BOT ONLINE :", client.user)
-
-@client.event
-async def on_message(message):
-
+# ================= MODERATION =================
+async def handle_message(message: discord.Message):
     if message.author.bot:
         return
 
-    print("MSG:", message.content)
+    score = await ai_moderation(message.content)
 
-    result = ia_check(message.content)
-    print("IA:", result)
+    user_id = message.author.id
+    user_scores[user_id] = user_scores.get(user_id, 0) + score
 
-    if not result["delete"]:
-        return
+    # seuil suppression
+    if score >= 2.3:
+        try:
+            await message.delete()
+        except:
+            pass
 
-    try:
-        await message.delete()
-    except:
-        pass
+        channel = bot.get_channel(REPORT_CHANNEL_ID)
 
-    data = load()
-    uid = str(message.author.id)
+        if channel:
+            await channel.send(
+                f"🚨 Message supprimé\n"
+                f"Utilisateur: {message.author}\n"
+                f"Score: {score}/3\n"
+                f"Contenu: {message.content}"
+            )
 
-    if uid not in data:
-        data[uid] = 0
 
-    data[uid] += result["score"]
-    save(data)
+# ================= EVENTS =================
+@bot.event
+async def on_ready():
+    print(f"Connecté en tant que {bot.user}")
 
-    try:
-        channel = await client.fetch_channel(SALON_REPORT)
 
-        embed = discord.Embed(
-            title="MODERATION IA",
-            color=discord.Color.red(),
-            timestamp=datetime.utcnow()
-        )
+@bot.event
+async def on_message(message):
+    await handle_message(message)
+    await bot.process_commands(message)
 
-        embed.add_field(name="User", value=str(message.author), inline=False)
-        embed.add_field(name="Score", value=str(result["score"]), inline=True)
-        embed.add_field(name="Total", value=str(data[uid]), inline=True)
-        embed.add_field(name="Reason", value=result["reason"], inline=False)
-        embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
-        await channel.send(embed=embed)
+# ================= COMMANDES =================
+def is_fondateur(ctx):
+    return any(role.name == FOUNDER_ROLE_NAME for role in ctx.author.roles)
 
-    except Exception as e:
-        print("REPORT ERROR:", e)
 
-client.run(DISCORD_TOKEN)
+@bot.command()
+async def reset(ctx):
+    if not is_fondateur(ctx):
+        return await ctx.send("⛔ Accès refusé")
+
+    global user_scores
+    user_scores = {}
+
+    await ctx.send("✅ Scores remis à zéro")
+
+
+@bot.command()
+async def score(ctx):
+    if not is_fondateur(ctx):
+        return await ctx.send("⛔ Accès refusé")
+
+    total = user_scores.get(ctx.author.id, 0)
+    await ctx.send(f"📊 Ton score: {total:.2f}")
+
+
+# ================= RUN =================
+bot.run(TOKEN)
