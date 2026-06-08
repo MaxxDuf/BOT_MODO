@@ -20,6 +20,10 @@ app = Flask(__name__)
 def home():
     return "Bot is running"
 
+@app.route("/ping")
+def ping():
+    return "ok"
+
 # =========================
 # CONFIG
 # =========================
@@ -64,7 +68,6 @@ client = discord.Client(intents=intents)
 def charger_scores():
     if not os.path.exists(JSON_FILE):
         return {}
-
     try:
         with open(JSON_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -79,7 +82,7 @@ def sauvegarder_scores(data):
         pass
 
 # =========================
-# NORMALISATION ANTI-CONTOURNEMENT
+# NORMALISATION
 # =========================
 
 def normaliser_texte(text: str):
@@ -91,46 +94,31 @@ def normaliser_texte(text: str):
     )
 
     text = text.replace("@", "a").replace("0", "o").replace("1", "i").replace("$", "s").replace("3", "e")
-
     text = re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ\s]", " ", text)
     text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 # =========================
-# HATE PATTERNS (RACISME + GENERALISATION)
+# HATE PATTERNS
 # =========================
 
 HATE_PATTERNS = [
-    # insultes directes
     "sale noir", "sale blanc", "sale arabe", "sale juif",
     "nigger", "nigga", "fdp", "connard", "encule", "pute",
-
-    # racisme implicite
-    "vous les noirs", "vous les blanc", "vous les arabes",
-    "les noirs sont", "les blancs sont", "les arabes sont",
-
-    # généralisations
+    "vous les noirs", "vous les arabes", "vous les blancs",
+    "les noirs sont", "les arabes sont", "les blancs sont",
     "vous etes tous des voleurs",
     "ils sont tous des voleurs",
-    "vous etes tous pareils",
-    "ils sont tous pareils",
-
-    # exclusion
     "retourne dans ton pays",
-    "vous n avez rien a faire ici"
 ]
-
-# =========================
-# HARD FILTER
-# =========================
 
 def hard_filter(text):
     t = normaliser_texte(text)
     return any(p in t for p in HATE_PATTERNS)
 
 # =========================
-# FALLBACK
+# IA FALLBACK
 # =========================
 
 def fallback():
@@ -144,7 +132,6 @@ def analyser_message(contenu: str):
 
     t = normaliser_texte(contenu)
 
-    # 🔥 OVERRIDE ABSOLU LOCAL
     if hard_filter(contenu):
         return {
             "delete": True,
@@ -156,20 +143,19 @@ def analyser_message(contenu: str):
         return fallback()
 
     prompt = f"""
-Tu es une IA de modération Discord ULTRA STRICTE.
+Tu es une IA de modération ULTRA STRICTE Discord.
 
-Tu dois détecter :
+Détecte :
 - insultes
-- racisme direct ou implicite
-- généralisations sur des groupes ("vous les X êtes tous...")
+- racisme explicite ou implicite
+- généralisations sur des groupes
 - stéréotypes
-- humiliation
-- provocations
+- humiliations
+- sarcasme agressif
 
-RÈGLE :
-Si doute → DELETE = TRUE
+Si doute → delete = true
 
-Message :
+Message:
 \"\"\"{contenu}\"\"\"
 
 Réponds UNIQUEMENT JSON :
@@ -197,7 +183,6 @@ Réponds UNIQUEMENT JSON :
 
         data = r.json()
         content = data["choices"][0]["message"]["content"]
-
         result = json.loads(content)
 
         if result.get("delete") and float(result.get("score", 0)) < 1:
@@ -230,7 +215,7 @@ async def on_message(message):
     uid = str(message.author.id)
 
     # =========================
-    # COMMANDES RESET / SCORE
+    # COMMANDES
     # =========================
 
     if message.content.startswith("!reset"):
@@ -242,7 +227,7 @@ async def on_message(message):
             scores[str(m.id)] = 0
 
         sauvegarder_scores(scores)
-        await message.channel.send("✅ Reset effectué")
+        await message.channel.send("✅ Reset OK")
         return
 
     if message.content.startswith("!score"):
@@ -273,12 +258,19 @@ async def on_message(message):
 
     sauvegarder_scores(scores)
 
-    report = client.get_channel(SALON_REPORT)
+    # =========================
+    # FIX IMPORTANT REPORT CHANNEL
+    # =========================
+
+    try:
+        report = await client.fetch_channel(SALON_REPORT)
+    except:
+        report = None
 
     if report:
         embed = discord.Embed(
-            title="🛡️MODÉRATION🛡️",
-            color=discord.Color.bleu(),
+            title="🚨 MODÉRATION IA",
+            color=discord.Color.red(),
             timestamp=datetime.utcnow()
         )
 
@@ -293,7 +285,10 @@ async def on_message(message):
         elif total >= SEUIL_ALERTE:
             embed.add_field(name="⚠️ ALERTE", value="Surveillance", inline=False)
 
-        await report.send(embed=embed)
+        try:
+            await report.send(embed=embed)
+        except Exception as e:
+            print("Send error:", e)
 
 # =========================
 # RUN
