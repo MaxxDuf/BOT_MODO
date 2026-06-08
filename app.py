@@ -15,10 +15,10 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 SALON_REPORT = 1513274703572373504
-JSON_FILE = "toxicite.json"
+FILE = "data.json"
 
 # =========================
-# DISCORD INTENTS (IMPORTANT)
+# DISCORD
 # =========================
 
 intents = discord.Intents.default()
@@ -30,47 +30,35 @@ client = discord.Client(intents=intents)
 # DATA
 # =========================
 
-def load_data():
-    if not os.path.exists(JSON_FILE):
+def load():
+    if not os.path.exists(FILE):
         return {}
-    with open(JSON_FILE, "r", encoding="utf-8") as f:
+    with open(FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_data(data):
-    with open(JSON_FILE, "w", encoding="utf-8") as f:
+def save(data):
+    with open(FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
 # =========================
-# IA MODERATION (MISTRAL)
+# IA (MISTRAL)
 # =========================
 
-def analyze_text(text):
+def ia_check(text):
 
     if not MISTRAL_API_KEY:
-        return {"delete": False, "score": 0, "reason": "no_api_key"}
+        return {"delete": False, "score": 0, "reason": "no_key"}
 
     prompt = f"""
-Tu es une IA de modération Discord très stricte.
+Tu es une IA de modération Discord.
 
-Détecte :
-- insultes
-- racisme
-- haine directe ou indirecte
-- moqueries humiliantes
-- propos violents ou dégradants
-- sous-entendus offensants
-
-IMPORTANT : même les doubles sens doivent être détectés.
+Détecte insultes, haine, racisme, harcèlement, moqueries.
 
 Message:
 {text}
 
-Répond UNIQUEMENT en JSON :
-{{
-  "delete": true/false,
-  "score": 0.5,
-  "reason": "court"
-}}
+Répond JSON uniquement:
+{{"delete": true, "score": 0.5, "reason": "court"}}
 """
 
     try:
@@ -88,13 +76,13 @@ Répond UNIQUEMENT en JSON :
             timeout=10
         )
 
-        result_text = r.json()["choices"][0]["message"]["content"]
-        result = json.loads(result_text)
+        text = r.json()["choices"][0]["message"]["content"]
+        result = json.loads(text)
 
         return {
             "delete": result.get("delete", False),
             "score": float(result.get("score", 0)),
-            "reason": result.get("reason", "IA")
+            "reason": result.get("reason", "ia")
         }
 
     except Exception as e:
@@ -102,16 +90,12 @@ Répond UNIQUEMENT en JSON :
         return {"delete": False, "score": 0, "reason": "error"}
 
 # =========================
-# READY
+# EVENTS
 # =========================
 
 @client.event
 async def on_ready():
-    print("BOT CONNECTÉ :", client.user)
-
-# =========================
-# MESSAGE HANDLER
-# =========================
+    print("BOT ONLINE :", client.user)
 
 @client.event
 async def on_message(message):
@@ -119,69 +103,46 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    print("MESSAGE RECU:", message.content)
+    print("MSG:", message.content)
 
-    data = load_data()
-    user_id = str(message.author.id)
-
-    # =========================
-    # COMMAND RESET
-    # =========================
-
-    if message.content.startswith("!reset"):
-        if user_id in data:
-            data[user_id] = 0
-            save_data(data)
-            await message.channel.send("✅ Score remis à 0.")
-        return
-
-    # =========================
-    # IA ANALYSIS
-    # =========================
-
-    result = analyze_text(message.content)
-
-    print("IA RESULT:", result)
+    result = ia_check(message.content)
+    print("IA:", result)
 
     if not result["delete"]:
         return
 
-    # DELETE MESSAGE
     try:
         await message.delete()
     except:
         pass
 
-    # SCORE UPDATE
-    if user_id not in data:
-        data[user_id] = 0
+    data = load()
+    uid = str(message.author.id)
 
-    data[user_id] += result["score"]
-    save_data(data)
+    if uid not in data:
+        data[uid] = 0
 
-    # REPORT
+    data[uid] += result["score"]
+    save(data)
+
     try:
         channel = await client.fetch_channel(SALON_REPORT)
 
         embed = discord.Embed(
-            title="🚨 MODERATION IA",
+            title="MODERATION IA",
             color=discord.Color.red(),
             timestamp=datetime.utcnow()
         )
 
         embed.add_field(name="User", value=str(message.author), inline=False)
-        embed.add_field(name="Score ajouté", value=str(result["score"]), inline=True)
-        embed.add_field(name="Score total", value=str(data[user_id]), inline=True)
-        embed.add_field(name="Raison", value=result["reason"], inline=False)
+        embed.add_field(name="Score", value=str(result["score"]), inline=True)
+        embed.add_field(name="Total", value=str(data[uid]), inline=True)
+        embed.add_field(name="Reason", value=result["reason"], inline=False)
         embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
         await channel.send(embed=embed)
 
     except Exception as e:
         print("REPORT ERROR:", e)
-
-# =========================
-# RUN
-# =========================
 
 client.run(DISCORD_TOKEN)
