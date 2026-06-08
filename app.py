@@ -44,18 +44,19 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # =====================
-# START
+# START PROPRE
 # =====================
-async def main():
-    # lance Flask en thread léger (OK)
+async def run():
     import threading
+
+    # Flask en background
     threading.Thread(
         target=lambda: app.run(host="0.0.0.0", port=10000),
         daemon=True
     ).start()
 
-    # lance bot proprement
+    # Discord bot
     await bot.start(TOKEN)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run())
