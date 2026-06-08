@@ -1,148 +1,215 @@
 import os
+import json
+import threading
+import re
+import unicodedata
+import requests
+from datetime import datetime
+
 import discord
-from discord.ext import commands
-from mistralai import Mistral
+from flask import Flask
+from dotenv import load_dotenv
 
-# ================= CONFIG =================
-TOKEN = os.getenv("DISCORD_TOKEN")
-MISTRAL_KEY = os.getenv("MISTRAL_API_KEY")
+# =========================
+# FLASK
+# =========================
 
-REPORT_CHANNEL_ID = 1513274703572373504
-FOUNDER_ROLE_NAME = "Fondateur"
+app = Flask(__name__)
 
-# ================= INTENTS (IMPORTANT) =================
+@app.route("/")
+def home():
+    return "Bot is running"
+
+@app.route("/ping")
+def ping():
+    return "ok"
+
+# =========================
+# CONFIG
+# =========================
+
+SALON_REPORT = 1513274703572373504
+
+SALONS_SURVEILLES = {
+    1499033414358142977,
+    1500213292403134486
+}
+
+JSON_FILE = "toxicite.json"
+
+# =========================
+# ENV
+# =========================
+
+load_dotenv()
+
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+
+# =========================
+# DISCORD
+# =========================
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
-intents.messages = True
+intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client(intents=intents)
 
-# ================= STOCKAGE =================
-user_scores = {}
+# =========================
+# CACHE REPORT CHANNEL
+# =========================
 
-# ================= IA =================
-client = Mistral(api_key=MISTRAL_KEY) if MISTRAL_KEY else None
+report_channel_cache = None
 
+async def get_report_channel():
+    global report_channel_cache
 
-def fallback_score(text: str) -> float:
-    """Sécurité si IA HS"""
-    t = text.lower()
-
-    bad_keywords = [
-        "insulte", "idiot", "nul", "hate", "trafiq", "armes"
-    ]
-
-    if any(k in t for k in bad_keywords):
-        return 2.7
-
-    return 0.2
-
-
-async def ai_moderation(text: str) -> float:
-    """
-    Retourne un score entre 0 et 3 :
-    0 = safe
-    3 = très toxique
-    """
-
-    if not client:
-        return fallback_score(text)
+    if report_channel_cache is not None:
+        return report_channel_cache
 
     try:
-        prompt = f"""
-Tu es un système de modération.
-Analyse ce message et retourne UNIQUEMENT un nombre entre 0 et 3.
+        channel = await client.fetch_channel(SALON_REPORT)
+        report_channel_cache = channel
+        return channel
+    except Exception as e:
+        print("❌ Erreur fetch_channel report:", e)
+        return None
 
-Règles :
-0 = clean
-1 = léger doute
-2 = insultes / toxicité
-3 = haine / racisme / illégal / grave
+# =========================
+# JSON SAFE
+# =========================
 
-Message:
-{text}
-"""
-
-        res = client.chat.complete(
-            model="mistral-small-latest",
-            messages=[{"role": "user", "content": prompt}]
-        )
-
-        output = res.choices[0].message.content.strip()
-
-        # sécurité parsing
-        score = float("".join(c for c in output if c in "0123456789."))
-        return max(0, min(3, score))
-
+def charger_scores():
+    if not os.path.exists(JSON_FILE):
+        return {}
+    try:
+        with open(JSON_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
     except:
-        return fallback_score(text)
+        return {}
 
+def sauvegarder_scores(data):
+    try:
+        with open(JSON_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except:
+        pass
 
-# ================= MODERATION =================
-async def handle_message(message: discord.Message):
+# =========================
+# NORMALISATION
+# =========================
+
+def normaliser_texte(text: str):
+    text = text.lower()
+    text = ''.join(
+        c for c in unicodedata.normalize('NFD', text)
+        if unicodedata.category(c) != 'Mn'
+    )
+    text = re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ\s]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+# =========================
+# FILTRE SIMPLE (SECURITE)
+# =========================
+
+HATE = [
+    "connard", "fdp", "pute", "encule",
+    "sale noir", "sale blanc",
+    "vous les noirs", "vous les blancs",
+    "les noirs sont", "les blancs sont",
+    "retourne dans ton pays"
+]
+
+def hard_filter(text):
+    t = normaliser_texte(text)
+    return any(x in t for x in HATE)
+
+# =========================
+# IA SIMPLE (fallback si pas clé)
+# =========================
+
+def analyser_message(content: str):
+
+    if hard_filter(content):
+        return {"delete": True, "score": 3, "reason": "contenu haineux"}
+
+    return {"delete": False, "score": 0, "reason": "clean"}
+
+# =========================
+# EVENTS
+# =========================
+
+@client.event
+async def on_ready():
+    print(f"Connecté : {client.user}")
+
+@client.event
+async def on_message(message):
+
     if message.author.bot:
         return
 
-    score = await ai_moderation(message.content)
+    scores = charger_scores()
+    uid = str(message.author.id)
 
-    user_id = message.author.id
-    user_scores[user_id] = user_scores.get(user_id, 0) + score
+    # =========================
+    # FILTRE SALONS
+    # =========================
 
-    # seuil suppression
-    if score >= 2.3:
+    if message.channel.id not in SALONS_SURVEILLES:
+        return
+
+    result = analyser_message(message.content)
+
+    if not result["delete"]:
+        return
+
+    try:
+        await message.delete()
+    except:
+        pass
+
+    scores[uid] = scores.get(uid, 0) + result["score"]
+    total = scores[uid]
+
+    sauvegarder_scores(scores)
+
+    # =========================
+    # REPORT FIX ULTRA FIABLE
+    # =========================
+
+    report = await get_report_channel()
+
+    if report is not None:
         try:
-            await message.delete()
-        except:
-            pass
-
-        channel = bot.get_channel(REPORT_CHANNEL_ID)
-
-        if channel:
-            await channel.send(
-                f"🚨 Message supprimé\n"
-                f"Utilisateur: {message.author}\n"
-                f"Score: {score}/3\n"
-                f"Contenu: {message.content}"
+            embed = discord.Embed(
+                title="🚨 MODÉRATION",
+                color=discord.Color.red(),
+                timestamp=datetime.utcnow()
             )
 
+            embed.add_field(name="Utilisateur", value=str(message.author), inline=False)
+            embed.add_field(name="Raison", value=result["reason"], inline=False)
+            embed.add_field(name="Score total", value=str(total), inline=True)
+            embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
-# ================= EVENTS =================
-@bot.event
-async def on_ready():
-    print(f"Connecté en tant que {bot.user}")
+            await report.send(embed=embed)
 
+        except Exception as e:
+            print("❌ Erreur envoi report:", e)
+    else:
+        print("❌ Salon report introuvable")
 
-@bot.event
-async def on_message(message):
-    await handle_message(message)
-    await bot.process_commands(message)
+# =========================
+# RUN
+# =========================
 
+def run_bot():
+    client.run(DISCORD_TOKEN)
 
-# ================= COMMANDES =================
-def is_fondateur(ctx):
-    return any(role.name == FOUNDER_ROLE_NAME for role in ctx.author.roles)
-
-
-@bot.command()
-async def reset(ctx):
-    if not is_fondateur(ctx):
-        return await ctx.send("⛔ Accès refusé")
-
-    global user_scores
-    user_scores = {}
-
-    await ctx.send("✅ Scores remis à zéro")
-
-
-@bot.command()
-async def score(ctx):
-    if not is_fondateur(ctx):
-        return await ctx.send("⛔ Accès refusé")
-
-    total = user_scores.get(ctx.author.id, 0)
-    await ctx.send(f"📊 Ton score: {total:.2f}")
-
-
-# ================= RUN =================
-bot.run(TOKEN)
+if __name__ == "__main__":
+    threading.Thread(target=run_bot).start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
