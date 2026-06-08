@@ -1,62 +1,113 @@
 import os
-import asyncio
-from flask import Flask
+import json
+import threading
+from datetime import datetime
+
 import discord
-from discord.ext import commands
+from flask import Flask
 from dotenv import load_dotenv
 
-load_dotenv()
+# =========================
+# FLASK (Render "site web")
+# =========================
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-
-# =====================
-# WEB SERVER
-# =====================
 app = Flask(__name__)
 
 @app.route("/")
 def home():
     return "Bot is running"
 
-# =====================
+@app.route("/health")
+def health():
+    return "OK"
+
+# =========================
+# CHARGEMENT ENV
+# =========================
+
+load_dotenv()
+
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+
+# =========================
 # DISCORD BOT
-# =====================
+# =========================
+
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client(intents=intents)
 
-@bot.event
+JSON_FILE = "toxicite.json"
+
+
+def charger_scores():
+    if not os.path.exists(JSON_FILE):
+        with open(JSON_FILE, "w") as f:
+            json.dump({}, f)
+
+    with open(JSON_FILE, "r") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+
+
+def sauvegarder_scores(data):
+    with open(JSON_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+
+@client.event
 async def on_ready():
-    print(f"Connecté : {bot.user}")
+    print(f"Bot connecté : {client.user}")
 
-@bot.event
+
+@client.event
 async def on_message(message):
     if message.author.bot:
         return
 
-    if "merde" in message.content.lower():
-        try:
-            await message.delete()
-        except:
-            pass
+    # exemple simple (tu peux remettre ton IA après)
+    contenu = message.content.lower()
 
-    await bot.process_commands(message)
+    score = 0
+    if "insulte" in contenu:
+        score = 1
+    elif "spam" in contenu:
+        score = 2
 
-# =====================
-# START PROPRE
-# =====================
-async def run():
-    import threading
+    if score == 0:
+        return
 
-    # Flask en background
-    threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=10000),
-        daemon=True
-    ).start()
+    try:
+        await message.delete()
+    except:
+        pass
 
-    # Discord bot
-    await bot.start(TOKEN)
+    scores = charger_scores()
+    user_id = str(message.author.id)
+
+    scores[user_id] = scores.get(user_id, 0) + score
+    sauvegarder_scores(scores)
+
+# =========================
+# RUN DISCORD BOT
+# =========================
+
+def run_bot():
+    if DISCORD_TOKEN is None:
+        print("DISCORD_TOKEN manquant")
+        return
+    client.run(DISCORD_TOKEN)
+
+# =========================
+# LANCEMENT
+# =========================
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    threading.Thread(target=run_bot).start()
+
+    # Render écoute ce serveur web
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
