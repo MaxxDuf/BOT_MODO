@@ -45,6 +45,7 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-small")
 
 # =========================
 # DISCORD
@@ -66,19 +67,18 @@ report_channel_cache = None
 async def get_report_channel():
     global report_channel_cache
 
-    if report_channel_cache is not None:
+    if report_channel_cache:
         return report_channel_cache
 
     try:
         channel = await client.fetch_channel(SALON_REPORT)
         report_channel_cache = channel
         return channel
-    except Exception as e:
-        print("❌ Erreur fetch_channel report:", e)
+    except:
         return None
 
 # =========================
-# JSON SAFE
+# JSON
 # =========================
 
 def charger_scores():
@@ -98,45 +98,69 @@ def sauvegarder_scores(data):
         pass
 
 # =========================
-# NORMALISATION
-# =========================
-
-def normaliser_texte(text: str):
-    text = text.lower()
-    text = ''.join(
-        c for c in unicodedata.normalize('NFD', text)
-        if unicodedata.category(c) != 'Mn'
-    )
-    text = re.sub(r"[^a-zàâçéèêëîïôûùüÿñæœ\s]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-# =========================
-# FILTRE SIMPLE (SECURITE)
-# =========================
-
-HATE = [
-    "connard", "fdp", "pute", "encule",
-    "sale noir", "sale blanc",
-    "vous les noirs", "vous les blancs",
-    "les noirs sont", "les blancs sont",
-    "retourne dans ton pays"
-]
-
-def hard_filter(text):
-    t = normaliser_texte(text)
-    return any(x in t for x in HATE)
-
-# =========================
-# IA SIMPLE (fallback si pas clé)
+# IA MODÉRATION
 # =========================
 
 def analyser_message(content: str):
 
-    if hard_filter(content):
-        return {"delete": True, "score": 3, "reason": "contenu haineux"}
+    if not MISTRAL_API_KEY:
+        return {"delete": False, "score": 0, "reason": "no_api_key"}
 
-    return {"delete": False, "score": 0, "reason": "clean"}
+    prompt = f"""
+Tu es une IA de modération Discord.
+
+Analyse ce message et détecte :
+- insultes
+- racisme explicite ou implicite
+- généralisations ("vous les X êtes tous...")
+- harcèlement
+- moqueries agressives
+- propos haineux même déguisés
+
+IMPORTANT :
+- Comprends le contexte et le double sens
+- Si doute → delete = true
+
+Message:
+\"\"\"{content}\"\"\"
+
+Répond uniquement en JSON :
+{{
+  "delete": true/false,
+  "score": 0.5 à 3,
+  "reason": "court motif"
+}}
+"""
+
+    try:
+        r = requests.post(
+            "https://api.mistral.ai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {MISTRAL_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": MISTRAL_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2
+            },
+            timeout=8
+        )
+
+        data = r.json()
+        text = data["choices"][0]["message"]["content"]
+
+        result = json.loads(text)
+
+        return {
+            "delete": bool(result.get("delete", False)),
+            "score": float(result.get("score", 0)),
+            "reason": result.get("reason", "IA")
+        }
+
+    except Exception as e:
+        print("IA ERROR:", e)
+        return {"delete": False, "score": 0, "reason": "ia_error"}
 
 # =========================
 # EVENTS
@@ -152,15 +176,11 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    scores = charger_scores()
-    uid = str(message.author.id)
-
-    # =========================
-    # FILTRE SALONS
-    # =========================
-
     if message.channel.id not in SALONS_SURVEILLES:
         return
+
+    scores = charger_scores()
+    uid = str(message.author.id)
 
     result = analyser_message(message.content)
 
@@ -177,31 +197,26 @@ async def on_message(message):
 
     sauvegarder_scores(scores)
 
-    # =========================
-    # REPORT FIX ULTRA FIABLE
-    # =========================
-
     report = await get_report_channel()
 
-    if report is not None:
+    if report:
         try:
             embed = discord.Embed(
-                title="🚨 MODÉRATION",
+                title="🚨 MODÉRATION IA",
                 color=discord.Color.red(),
                 timestamp=datetime.utcnow()
             )
 
             embed.add_field(name="Utilisateur", value=str(message.author), inline=False)
             embed.add_field(name="Raison", value=result["reason"], inline=False)
+            embed.add_field(name="Score ajouté", value=str(result["score"]), inline=True)
             embed.add_field(name="Score total", value=str(total), inline=True)
             embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
             await report.send(embed=embed)
 
         except Exception as e:
-            print("❌ Erreur envoi report:", e)
-    else:
-        print("❌ Salon report introuvable")
+            print("REPORT ERROR:", e)
 
 # =========================
 # RUN
