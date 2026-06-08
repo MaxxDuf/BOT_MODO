@@ -224,9 +224,9 @@ async def on_message(message):
             await message.channel.send(f"📊 Score: {scores.get(u, 0)}")
         return
 
-    if message.content.startswith("!toptoxic"):
+    if message.content.startswith("!listepoint"):
         top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]
-        msg = "🏆 Top toxicité :\n"
+        msg = "Liste :\n"
         for u, s in top:
             msg += f"- <@{u}> : {s}\n"
         await message.channel.send(msg)
@@ -258,7 +258,7 @@ async def on_message(message):
 
     if report:
         embed = discord.Embed(
-            title="🚨 MODÉRATION PRO",
+            title="🛡️ MODÉRATION 🛡️",
             color=discord.Color.red(),
             timestamp=datetime.utcnow()
         )
@@ -272,7 +272,7 @@ async def on_message(message):
         if total >= SEUIL_CRITIQUE:
             embed.add_field(name="⚠️ CRITIQUE", value="Utilisateur très toxique", inline=False)
         elif total >= SEUIL_ALERTE:
-            embed.add_field(name="⚠️ ALERTE", value="Surveillance active", inline=False)
+            embed.add_field(name="⚠️ ALERTE", value="Une suveillance serait nésésaire", inline=False)
 
         await report.send(embed=embed)
 
