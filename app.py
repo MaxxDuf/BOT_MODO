@@ -1,20 +1,21 @@
 import os
 import threading
 from flask import Flask
-from mistralai.client import MistralClient
-
-mistral = MistralClient(api_key=MISTRAL_KEY)
 
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from mistralai import Mistral
+# =====================
+# LOAD ENV
+# =====================
+load_dotenv()
+
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 # =====================
 # WEB SERVER (Render)
 # =====================
-
 app = Flask(__name__)
 
 @app.route("/")
@@ -27,32 +28,58 @@ def run_web():
 # =====================
 # DISCORD BOT
 # =====================
-
-load_dotenv()
-
-TOKEN = os.getenv("DISCORD_TOKEN")
-MISTRAL_KEY = os.getenv("MISTRAL_API_KEY")
-
-mistral = Mistral(api_key=MISTRAL_KEY)
-
 intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# score simple en mémoire (reset si reboot)
+user_scores = {}
+
+def add_score(user_id, value):
+    if user_id not in user_scores:
+        user_scores[user_id] = 0
+    user_scores[user_id] += value
+    return user_scores[user_id]
+
 @bot.event
 async def on_ready():
-    print(f"Bot connecté : {bot.user}")
+    print(f"Connecté en tant que {bot.user}")
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
-    # exemple simple test
-    if "badword" in message.content.lower():
-        await message.delete()
-        await message.channel.send("Message supprimé (toxique détecté)")
+    content = message.content.lower()
+
+    score_add = 0
+
+    # SIMPLE DETECTION (tu pourras améliorer après avec IA)
+    bad_words = ["connard", "idiot", "merde", "pute"]
+
+    if any(word in content for word in bad_words):
+        score_add = 1
+
+        try:
+            await message.delete()
+        except:
+            print("Impossible de supprimer le message (permissions)")
+
+        score = add_score(message.author.id, score_add)
+
+        # seuils
+        if score >= 20:
+            await message.channel.send(f"{message.author.mention} banni (score {score})")
+            try:
+                await message.guild.ban(message.author, reason="Toxicité")
+            except:
+                pass
+
+        elif score >= 10:
+            await message.channel.send(
+                f"{message.author.mention} attention ⚠️ score: {score}"
+            )
 
     await bot.process_commands(message)
 
@@ -60,9 +87,8 @@ def run_bot():
     bot.run(TOKEN)
 
 # =====================
-# LANCEMENT
+# START
 # =====================
-
 if __name__ == "__main__":
     threading.Thread(target=run_web).start()
     threading.Thread(target=run_bot).start()
