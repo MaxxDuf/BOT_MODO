@@ -39,9 +39,8 @@ JSON_FILE = "toxicite.json"
 
 MISTRAL_MODEL = "mistral-small-latest"
 
-# 👑 FONDATEURS (REMPLACE PAR TES IDS)
 FONDATEURS = {
-    123456789012345678
+    123456789012345678  # <-- remplace par TON ID
 }
 
 # =========================
@@ -65,7 +64,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# REPORT CACHE
+# FLASK REPORT CACHE
 # =========================
 
 report_channel_cache = None
@@ -77,15 +76,13 @@ async def get_report_channel():
         return report_channel_cache
 
     try:
-        channel = await client.fetch_channel(SALON_REPORT)
-        report_channel_cache = channel
-        return channel
-    except Exception as e:
-        print("❌ report channel error:", e)
+        report_channel_cache = await client.fetch_channel(SALON_REPORT)
+        return report_channel_cache
+    except:
         return None
 
 # =========================
-# JSON
+# JSON SCORES
 # =========================
 
 def charger_scores():
@@ -125,8 +122,6 @@ def normaliser_texte(text: str):
 HATE = [
     "connard", "fdp", "pute", "encule",
     "sale noir", "sale blanc",
-    "vous les noirs", "vous les blancs",
-    "les noirs sont", "les blancs sont",
     "retourne dans ton pays"
 ]
 
@@ -151,18 +146,13 @@ def analyser_message_ia(content: str):
 
         system_prompt = """
 Tu es un modérateur Discord.
-Répond UNIQUEMENT en JSON:
 
+Répond UNIQUEMENT en JSON:
 {
   "delete": true/false,
   "score": 0-3,
   "reason": "courte raison"
 }
-
-Règles:
-- delete=true si haine / harcèlement / discrimination
-- score 3 = grave
-- score 0 = ok
 """
 
         payload = {
@@ -186,8 +176,7 @@ Règles:
 
         return json.loads(text)
 
-    except Exception as e:
-        print("❌ IA error:", e)
+    except:
         return None
 
 # =========================
@@ -207,7 +196,7 @@ def analyser_message(content: str):
     return {"delete": False, "score": 0, "reason": "fallback"}
 
 # =========================
-# BOT
+# BOT EVENTS
 # =========================
 
 @client.event
@@ -220,47 +209,21 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.channel.id not in SALONS_SURVEILLES:
-        return
-
-    content = message.content.strip()
+    content = (message.content or "").strip()
     uid = str(message.author.id)
 
     scores = charger_scores()
 
     # =========================
-    # COMMANDES ADMIN
+    # SALON UNIQUE COMMANDES
     # =========================
+    if message.channel.id != SALON_REPORT:
+        return
 
-    if content.lower().startswith("!reset"):
-
-        if message.author.id not in FONDATEURS:
-            await message.channel.send("❌ Pas permission.")
-            return
-
-        args = content.split()
-
-        if len(args) == 1:
-            scores[uid] = 0
-            sauvegarder_scores(scores)
-            await message.channel.send("✅ Ton score reset.")
-            return
-
-        if len(args) == 2:
-            try:
-                target = args[1].replace("<@", "").replace(">", "")
-                scores[target] = 0
-                sauvegarder_scores(scores)
-                await message.channel.send("✅ Score user reset.")
-            except:
-                await message.channel.send("❌ erreur")
-            return
-
+    # =========================
+    # !score
+    # =========================
     if content.lower() == "!score":
-
-        if message.author.id not in FONDATEURS:
-            await message.channel.send("❌ Pas permission.")
-            return
 
         if not scores:
             await message.channel.send("📊 Aucun score.")
@@ -268,7 +231,7 @@ async def on_message(message):
 
         sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
-        msg = "📊 Scores :\n"
+        msg = "📊 **Classement :**\n"
 
         for user_id, score in sorted_scores[:15]:
             msg += f"- <@{user_id}> : {score}\n"
@@ -277,12 +240,41 @@ async def on_message(message):
         return
 
     # =========================
-    # MODÉRATION
+    # !reset
     # =========================
+    if content.lower().startswith("!reset"):
+
+        if message.author.id not in FONDATEURS:
+            await message.channel.send("🔒 pas permission")
+            return
+
+        args = content.split()
+
+        if len(args) == 1:
+            scores[uid] = 0
+            sauvegarder_scores(scores)
+            await message.channel.send("✅ reset ok")
+            return
+
+        if len(args) == 2:
+            try:
+                target = args[1].replace("<@", "").replace(">", "").replace("!", "")
+                scores[target] = 0
+                sauvegarder_scores(scores)
+                await message.channel.send("✅ user reset")
+            except:
+                await message.channel.send("❌ erreur")
+            return
+
+    # =========================
+    # MODERATION IA
+    # =========================
+    if message.channel.id not in SALONS_SURVEILLES:
+        return
 
     result = analyser_message(content)
 
-    if not result["delete"]:
+    if not result.get("delete"):
         return
 
     try:
@@ -290,7 +282,7 @@ async def on_message(message):
     except:
         pass
 
-    scores[uid] = scores.get(uid, 0) + result["score"]
+    scores[uid] = scores.get(uid, 0) + result.get("score", 0)
     sauvegarder_scores(scores)
 
     report = await get_report_channel()
@@ -304,14 +296,14 @@ async def on_message(message):
             )
 
             embed.add_field(name="User", value=str(message.author), inline=False)
-            embed.add_field(name="Raison", value=result["reason"], inline=False)
+            embed.add_field(name="Raison", value=result.get("reason", "unknown"), inline=False)
             embed.add_field(name="Score", value=str(scores[uid]), inline=True)
             embed.add_field(name="Message", value=content[:1000], inline=False)
 
             await report.send(embed=embed)
 
-        except Exception as e:
-            print("❌ report error:", e)
+        except:
+            pass
 
 # =========================
 # RUN
