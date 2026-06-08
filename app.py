@@ -1,8 +1,6 @@
 import os
 import json
 import threading
-import re
-import unicodedata
 import requests
 from datetime import datetime
 
@@ -11,7 +9,7 @@ from flask import Flask
 from dotenv import load_dotenv
 
 # =========================
-# FLASK
+# FLASK (Render keep alive)
 # =========================
 
 app = Flask(__name__)
@@ -20,13 +18,14 @@ app = Flask(__name__)
 def home():
     return "Bot is running"
 
-@app.route("/ping")
-def ping():
-    return "ok"
+# =========================
+# ENV
+# =========================
 
-# =========================
-# CONFIG
-# =========================
+load_dotenv()
+
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 SALON_REPORT = 1513274703572373504
 
@@ -38,17 +37,7 @@ SALONS_SURVEILLES = {
 JSON_FILE = "toxicite.json"
 
 # =========================
-# ENV
-# =========================
-
-load_dotenv()
-
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
-MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-small")
-
-# =========================
-# DISCORD
+# DISCORD SETUP (IMPORTANT FIX)
 # =========================
 
 intents = discord.Intents.default()
@@ -59,29 +48,29 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# CACHE REPORT CHANNEL
+# DEBUG CACHE REPORT
 # =========================
 
-report_channel_cache = None
+report_cache = None
 
-async def get_report_channel():
-    global report_channel_cache
+async def get_report():
+    global report_cache
 
-    if report_channel_cache:
-        return report_channel_cache
+    if report_cache:
+        return report_cache
 
     try:
-        channel = await client.fetch_channel(SALON_REPORT)
-        report_channel_cache = channel
-        return channel
-    except:
+        report_cache = await client.fetch_channel(SALON_REPORT)
+        return report_cache
+    except Exception as e:
+        print("REPORT ERROR FETCH:", e)
         return None
 
 # =========================
-# JSON
+# JSON SAFE
 # =========================
 
-def charger_scores():
+def load_scores():
     if not os.path.exists(JSON_FILE):
         return {}
     try:
@@ -90,7 +79,7 @@ def charger_scores():
     except:
         return {}
 
-def sauvegarder_scores(data):
+def save_scores(data):
     try:
         with open(JSON_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
@@ -98,10 +87,10 @@ def sauvegarder_scores(data):
         pass
 
 # =========================
-# IA MODÉRATION
+# IA MODERATION (REAL)
 # =========================
 
-def analyser_message(content: str):
+def analyze(content: str):
 
     if not MISTRAL_API_KEY:
         return {"delete": False, "score": 0, "reason": "no_api_key"}
@@ -109,26 +98,21 @@ def analyser_message(content: str):
     prompt = f"""
 Tu es une IA de modération Discord.
 
-Analyse ce message et détecte :
+Analyse :
 - insultes
-- racisme explicite ou implicite
-- généralisations ("vous les X êtes tous...")
-- harcèlement
+- racisme direct ou indirect
 - moqueries agressives
-- propos haineux même déguisés
-
-IMPORTANT :
-- Comprends le contexte et le double sens
-- Si doute → delete = true
+- généralisations
+- haine implicite
 
 Message:
 \"\"\"{content}\"\"\"
 
-Répond uniquement en JSON :
+Répond UNIQUEMENT JSON :
 {{
-  "delete": true/false,
-  "score": 0.5 à 3,
-  "reason": "court motif"
+ "delete": true/false,
+ "score": 0.5 à 3,
+ "reason": "court"
 }}
 """
 
@@ -140,7 +124,7 @@ Répond uniquement en JSON :
                 "Content-Type": "application/json"
             },
             json={
-                "model": MISTRAL_MODEL,
+                "model": "mistral-small",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.2
             },
@@ -160,7 +144,7 @@ Répond uniquement en JSON :
 
     except Exception as e:
         print("IA ERROR:", e)
-        return {"delete": False, "score": 0, "reason": "ia_error"}
+        return {"delete": False, "score": 0, "reason": "ia_fail"}
 
 # =========================
 # EVENTS
@@ -168,7 +152,7 @@ Répond uniquement en JSON :
 
 @client.event
 async def on_ready():
-    print(f"Connecté : {client.user}")
+    print(f"BOT CONNECTÉ : {client.user}")
 
 @client.event
 async def on_message(message):
@@ -176,28 +160,32 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    print("MSG RECU:", message.content)  # DEBUG IMPORTANT
+
     if message.channel.id not in SALONS_SURVEILLES:
         return
 
-    scores = charger_scores()
+    scores = load_scores()
     uid = str(message.author.id)
 
-    result = analyser_message(message.content)
+    result = analyze(message.content)
+
+    print("IA RESULT:", result)  # DEBUG
 
     if not result["delete"]:
         return
 
     try:
         await message.delete()
-    except:
-        pass
+    except Exception as e:
+        print("DELETE ERROR:", e)
 
     scores[uid] = scores.get(uid, 0) + result["score"]
     total = scores[uid]
 
-    sauvegarder_scores(scores)
+    save_scores(scores)
 
-    report = await get_report_channel()
+    report = await get_report()
 
     if report:
         try:
@@ -207,24 +195,24 @@ async def on_message(message):
                 timestamp=datetime.utcnow()
             )
 
-            embed.add_field(name="Utilisateur", value=str(message.author), inline=False)
-            embed.add_field(name="Raison", value=result["reason"], inline=False)
-            embed.add_field(name="Score ajouté", value=str(result["score"]), inline=True)
-            embed.add_field(name="Score total", value=str(total), inline=True)
+            embed.add_field(name="User", value=str(message.author), inline=False)
+            embed.add_field(name="Reason", value=result["reason"], inline=False)
+            embed.add_field(name="Score", value=str(result["score"]), inline=True)
+            embed.add_field(name="Total", value=str(total), inline=True)
             embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
             await report.send(embed=embed)
 
         except Exception as e:
-            print("REPORT ERROR:", e)
+            print("REPORT SEND ERROR:", e)
 
 # =========================
 # RUN
 # =========================
 
-def run_bot():
+def run():
     client.run(DISCORD_TOKEN)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot).start()
+    threading.Thread(target=run).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
