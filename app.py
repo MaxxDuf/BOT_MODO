@@ -57,7 +57,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# JSON SCORE
+# STOCKAGE
 # =========================
 
 def charger_scores():
@@ -76,7 +76,25 @@ def sauvegarder_scores(data):
         json.dump(data, f, indent=4)
 
 # =========================
-# FALLBACK SIMPLE (si IA fail)
+# FILTRE DUR (priorité max)
+# =========================
+
+HARD_KEYWORDS = [
+    "trafic d'armes", "trafic d’armes",
+    "arme", "viol", "tuer",
+    "fdp", "connard", "enculé", "pute",
+    "ta mère", "ta mere", "tg", "nique"
+]
+
+def hard_filter(text: str):
+    t = text.lower()
+    for w in HARD_KEYWORDS:
+        if w in t:
+            return True
+    return False
+
+# =========================
+# FALLBACK REGEX
 # =========================
 
 REGEX_FALLBACK = [
@@ -88,14 +106,14 @@ REGEX_FALLBACK = [
     (r"je vais te tuer", 3),
 ]
 
-def fallback_analyse(text):
+def fallback(text):
     t = text.lower()
     for pattern, score in REGEX_FALLBACK:
         if re.search(pattern, t):
             return {
                 "delete": True,
                 "score": score,
-                "reason": "fallback détection"
+                "reason": "fallback"
             }
 
     return {"delete": False, "score": 0, "reason": "OK"}
@@ -106,30 +124,34 @@ def fallback_analyse(text):
 
 def analyser_message(contenu: str):
 
-    # si pas de clé → fallback
+    # 1. FILTRE DUR PRIORITAIRE
+    if hard_filter(contenu):
+        return {
+            "delete": True,
+            "score": 2.5,
+            "reason": "filtre critique"
+        }
+
+    # 2. IA
     if not MISTRAL_API_KEY:
-        return fallback_analyse(contenu)
+        return fallback(contenu)
 
     prompt = f"""
 Tu es un modérateur Discord très strict.
 
-Analyse ce message :
+Règles :
+- toute insulte, moquerie, provocation, violence, harcèlement, discrimination DOIT être supprimée
+- si doute → supprimer
 
+Message :
 \"\"\"{contenu}\"\"\"
-
-Détecte :
-- insultes
-- moqueries
-- harcèlement
-- discrimination
-- menaces
 
 Réponds UNIQUEMENT en JSON :
 
 {{
   "delete": true/false,
   "score": 0.5 à 3,
-  "reason": "catégorie courte"
+  "reason": "catégorie"
 }}
 """
 
@@ -153,7 +175,10 @@ Réponds UNIQUEMENT en JSON :
         data = response.json()
         content = data["choices"][0]["message"]["content"]
 
-        result = json.loads(content)
+        try:
+            result = json.loads(content)
+        except:
+            return fallback(contenu)
 
         return {
             "delete": bool(result.get("delete", False)),
@@ -163,7 +188,7 @@ Réponds UNIQUEMENT en JSON :
 
     except Exception as e:
         print("IA error:", e)
-        return fallback_analyse(contenu)
+        return fallback(contenu)
 
 # =========================
 # EVENTS
@@ -180,7 +205,7 @@ async def on_message(message):
         return
 
     scores = charger_scores()
-    user_id = str(message.author.id)
+    uid = str(message.author.id)
 
     # =========================
     # COMMANDES
@@ -190,25 +215,25 @@ async def on_message(message):
         if message.mentions:
             scores[str(message.mentions[0].id)] = 0
             sauvegarder_scores(scores)
-            await message.channel.send("✅ Score reset")
+            await message.channel.send("✅ Reset OK")
         return
 
     if message.content.startswith("!score"):
         if message.mentions:
-            uid = str(message.mentions[0].id)
-            await message.channel.send(f"📊 Score: {scores.get(uid, 0)}")
+            u = str(message.mentions[0].id)
+            await message.channel.send(f"📊 Score: {scores.get(u, 0)}")
         return
 
     if message.content.startswith("!toptoxic"):
         top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]
         msg = "🏆 Top toxicité :\n"
-        for uid, sc in top:
-            msg += f"- <@{uid}> : {sc}\n"
+        for u, s in top:
+            msg += f"- <@{u}> : {s}\n"
         await message.channel.send(msg)
         return
 
     # =========================
-    # FILTRAGE SALONS
+    # FILTRE SALONS
     # =========================
 
     if message.channel.id not in SALONS_SURVEILLES:
@@ -224,26 +249,21 @@ async def on_message(message):
     except:
         pass
 
-    if user_id not in scores:
-        scores[user_id] = 0
-
-    scores[user_id] += result["score"]
-    total = scores[user_id]
+    scores[uid] = scores.get(uid, 0) + result["score"]
+    total = scores[uid]
 
     sauvegarder_scores(scores)
 
-    report_channel = client.get_channel(SALON_REPORT)
+    report = client.get_channel(SALON_REPORT)
 
-    if report_channel:
-
+    if report:
         embed = discord.Embed(
-            title="🚨 Modération IA",
+            title="🚨 MODÉRATION PRO",
             color=discord.Color.red(),
             timestamp=datetime.utcnow()
         )
 
-        embed.add_field(name="Utilisateur", value=f"{message.author} ({message.author.id})", inline=False)
-        embed.add_field(name="Salon", value=message.channel.mention, inline=False)
+        embed.add_field(name="Utilisateur", value=f"{message.author}", inline=False)
         embed.add_field(name="Raison", value=result["reason"], inline=False)
         embed.add_field(name="Score ajouté", value=str(result["score"]), inline=True)
         embed.add_field(name="Score total", value=str(total), inline=True)
@@ -252,12 +272,12 @@ async def on_message(message):
         if total >= SEUIL_CRITIQUE:
             embed.add_field(name="⚠️ CRITIQUE", value="Utilisateur très toxique", inline=False)
         elif total >= SEUIL_ALERTE:
-            embed.add_field(name="⚠️ ALERTE", value="Surveillance", inline=False)
+            embed.add_field(name="⚠️ ALERTE", value="Surveillance active", inline=False)
 
-        await report_channel.send(embed=embed)
+        await report.send(embed=embed)
 
 # =========================
-# BOT + FLASK
+# RUN
 # =========================
 
 def run_bot():
@@ -265,8 +285,4 @@ def run_bot():
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot).start()
-
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000))
-    )
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
