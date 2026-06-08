@@ -1,4 +1,5 @@
 discord.py
-mistralai
-python-dotenv
 flask
+python-dotenv
+requests
+mistralai
