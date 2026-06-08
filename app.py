@@ -259,7 +259,7 @@ async def on_message(message):
 
     if report:
         embed = discord.Embed(
-            title="🚨 MODÉRATION IA",
+            title="🛡️MODÉRATION🛡️",
             color=discord.Color.red(),
             timestamp=datetime.utcnow()
         )
@@ -271,9 +271,9 @@ async def on_message(message):
         embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
         if total >= SEUIL_CRITIQUE:
-            embed.add_field(name="⚠️ CRITIQUE", value="Utilisateur très toxique", inline=False)
+            embed.add_field(name="⚠️ CRITIQUE", value="A bannir", inline=False)
         elif total >= SEUIL_ALERTE:
-            embed.add_field(name="⚠️ ALERTE", value="Surveillance", inline=False)
+            embed.add_field(name="⚠️ ALERTE", value="A surveilleier", inline=False)
 
         await report.send(embed=embed)
 
