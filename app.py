@@ -35,9 +35,6 @@ SALONS_SURVEILLES = {
     1500213292403134486
 }
 
-SEUIL_ALERTE = 10
-SEUIL_CRITIQUE = 20
-
 JSON_FILE = "toxicite.json"
 
 # =========================
@@ -48,7 +45,6 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
-MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-small")
 
 # =========================
 # DISCORD
@@ -62,7 +58,27 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# JSON
+# CACHE REPORT CHANNEL
+# =========================
+
+report_channel_cache = None
+
+async def get_report_channel():
+    global report_channel_cache
+
+    if report_channel_cache is not None:
+        return report_channel_cache
+
+    try:
+        channel = await client.fetch_channel(SALON_REPORT)
+        report_channel_cache = channel
+        return channel
+    except Exception as e:
+        print("❌ Erreur fetch_channel report:", e)
+        return None
+
+# =========================
+# JSON SAFE
 # =========================
 
 def charger_scores():
@@ -82,13 +98,6 @@ def sauvegarder_scores(data):
         pass
 
 # =========================
-# ROLE CHECK
-# =========================
-
-def est_fondateur(member: discord.Member):
-    return any(role.name == "Fondateur" for role in member.roles)
-
-# =========================
 # NORMALISATION
 # =========================
 
@@ -103,16 +112,15 @@ def normaliser_texte(text: str):
     return text.strip()
 
 # =========================
-# FILTRE HAINE
+# FILTRE SIMPLE (SECURITE)
 # =========================
 
 HATE = [
-    "sale noir", "sale blanc", "nigga", "nigger",
+    "connard", "fdp", "pute", "encule",
+    "sale noir", "sale blanc",
     "vous les noirs", "vous les blancs",
     "les noirs sont", "les blancs sont",
-    "vous etes tous des voleurs",
-    "retourne dans ton pays",
-    "fdp", "connard", "encule", "pute"
+    "retourne dans ton pays"
 ]
 
 def hard_filter(text):
@@ -120,7 +128,7 @@ def hard_filter(text):
     return any(x in t for x in HATE)
 
 # =========================
-# IA
+# IA SIMPLE (fallback si pas clé)
 # =========================
 
 def analyser_message(content: str):
@@ -128,55 +136,7 @@ def analyser_message(content: str):
     if hard_filter(content):
         return {"delete": True, "score": 3, "reason": "contenu haineux"}
 
-    if not MISTRAL_API_KEY:
-        return {"delete": False, "score": 0, "reason": "no ai"}
-
-    prompt = f"""
-Modération Discord stricte.
-
-Détecte :
-- insultes
-- racisme direct/indirect
-- généralisations
-- haine
-
-Message:
-\"\"\"{content}\"\"\"
-
-Répond JSON:
-{{
- "delete": true/false,
- "score": 0.5 à 3,
- "reason": "type"
-}}
-"""
-
-    try:
-        r = requests.post(
-            "https://api.mistral.ai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {MISTRAL_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": MISTRAL_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.2
-            },
-            timeout=6
-        )
-
-        data = r.json()
-        result = json.loads(data["choices"][0]["message"]["content"])
-
-        return {
-            "delete": result.get("delete", False),
-            "score": float(result.get("score", 0)),
-            "reason": result.get("reason", "IA")
-        }
-
-    except:
-        return {"delete": False, "score": 0, "reason": "error"}
+    return {"delete": False, "score": 0, "reason": "clean"}
 
 # =========================
 # EVENTS
@@ -196,40 +156,7 @@ async def on_message(message):
     uid = str(message.author.id)
 
     # =========================
-    # COMMANDES SECURISEES
-    # =========================
-
-    if message.content.startswith("!reset"):
-        if not est_fondateur(message.author):
-            await message.channel.send("❌ T'a essayer quoi là 🔐")
-            return
-
-        if not message.mentions:
-            await message.channel.send("❌ Mentionne un utilisateur")
-            return
-
-        for m in message.mentions:
-            scores[str(m.id)] = 0
-
-        sauvegarder_scores(scores)
-        await message.channel.send("✅ Reset OK")
-        return
-
-    if message.content.startswith("!score"):
-        if not est_fondateur(message.author):
-            await message.channel.send("❌ Bien essayer")
-            return
-
-        if not message.mentions:
-            await message.channel.send("❌ Mentionne un utilisateur")
-            return
-
-        u = str(message.mentions[0].id)
-        await message.channel.send(f"📊 Score: {scores.get(u, 0)}")
-        return
-
-    # =========================
-    # SALONS
+    # FILTRE SALONS
     # =========================
 
     if message.channel.id not in SALONS_SURVEILLES:
@@ -251,28 +178,30 @@ async def on_message(message):
     sauvegarder_scores(scores)
 
     # =========================
-    # REPORT FIX
+    # REPORT FIX ULTRA FIABLE
     # =========================
 
-    try:
-        report = await client.fetch_channel(SALON_REPORT)
-    except:
-        report = None
+    report = await get_report_channel()
 
-    if report:
-        embed = discord.Embed(
-            title="🛡️MODÉRATION🛡️",
-            color=discord.Color.bleu(),
-            timestamp=datetime.utcnow()
-        )
+    if report is not None:
+        try:
+            embed = discord.Embed(
+                title="🚨 MODÉRATION",
+                color=discord.Color.red(),
+                timestamp=datetime.utcnow()
+            )
 
-        embed.add_field(name="Utilisateur", value=str(message.author), inline=False)
-        embed.add_field(name="Raison", value=result["reason"], inline=False)
-        embed.add_field(name="Score", value=str(result["score"]), inline=True)
-        embed.add_field(name="Total", value=str(total), inline=True)
-        embed.add_field(name="Message", value=message.content[:1000], inline=False)
+            embed.add_field(name="Utilisateur", value=str(message.author), inline=False)
+            embed.add_field(name="Raison", value=result["reason"], inline=False)
+            embed.add_field(name="Score total", value=str(total), inline=True)
+            embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
-        await report.send(embed=embed)
+            await report.send(embed=embed)
+
+        except Exception as e:
+            print("❌ Erreur envoi report:", e)
+    else:
+        print("❌ Salon report introuvable")
 
 # =========================
 # RUN
