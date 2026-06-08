@@ -1,6 +1,7 @@
 import os
 import json
 import threading
+import re
 from datetime import datetime
 
 import discord
@@ -33,12 +34,13 @@ SEUIL_CRITIQUE = 20
 
 JSON_FILE = "toxicite.json"
 
+SERVEUR_ID = 1513274703572373504  # pour commandes admin
+
 # =========================
 # ENV
 # =========================
 
 load_dotenv()
-
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 # =========================
@@ -72,32 +74,70 @@ def sauvegarder_scores(data):
         json.dump(data, f, indent=4)
 
 # =========================
-# DETECTION SIMPLE
+# DETECTION AVANCÉE
 # =========================
 
-MOTS_INTERDITS = [
-    "con",
-    "connard",
-    "pute",
-    "fdp",
-    "enculé",
-    "encule",
-    "salope",
-    "tg",
-    "ta gueule",
-    "nique",
-]
+CATEGORIES = {
+    "insulte": {
+        "patterns": [
+            r"\bcon(nard)?\b",
+            r"\bfdp\b",
+            r"\bencul(e|é)\b",
+            r"\bsalope\b",
+            r"\bpute\b",
+        ],
+        "score": 1
+    },
 
-def analyser_message(contenu):
+    "moquerie": {
+        "patterns": [
+            r"ta mère",
+            r"ta mere",
+            r"t'es nul",
+            r"t es nul",
+            r"mdr t'es",
+            r"haha t'es",
+        ],
+        "score": 0.5
+    },
+
+    "harcelement_leger": {
+        "patterns": [
+            r"tg\b",
+            r"ta gueule",
+            r"ferme[- ]?la",
+        ],
+        "score": 1.5
+    },
+
+    "discrimination": {
+        "patterns": [
+            r"sale (noir|blanc|arabe|juif|femme|gars)",
+        ],
+        "score": 3
+    },
+
+    "menace": {
+        "patterns": [
+            r"je vais te frapper",
+            r"je vais te tuer",
+            r"t'es mort",
+        ],
+        "score": 3
+    }
+}
+
+def analyser_message(contenu: str):
     texte = contenu.lower()
 
-    for mot in MOTS_INTERDITS:
-        if mot in texte:
-            return {
-                "delete": True,
-                "score": 1,
-                "reason": f"Mot interdit détecté : {mot}"
-            }
+    for categorie, data in CATEGORIES.items():
+        for pattern in data["patterns"]:
+            if re.search(pattern, texte):
+                return {
+                    "delete": True,
+                    "score": data["score"],
+                    "reason": f"{categorie} détecté"
+                }
 
     return {
         "delete": False,
@@ -119,6 +159,40 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    scores = charger_scores()
+    user_id = str(message.author.id)
+
+    # =========================
+    # COMMANDES
+    # =========================
+
+    if message.content.startswith("!reset"):
+        if message.mentions:
+            cible = str(message.mentions[0].id)
+            scores[cible] = 0
+            sauvegarder_scores(scores)
+            await message.channel.send(f"✅ Score remis à zéro pour {message.mentions[0].mention}")
+        return
+
+    if message.content.startswith("!score"):
+        if message.mentions:
+            cible = str(message.mentions[0].id)
+            score = scores.get(cible, 0)
+            await message.channel.send(f"📊 Score de toxicité : {score}")
+        return
+
+    if message.content.startswith("!toptoxic"):
+        top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]
+        msg = "🏆 Top toxicité :\n"
+        for uid, sc in top:
+            msg += f"- <@{uid}> : {sc}\n"
+        await message.channel.send(msg)
+        return
+
+    # =========================
+    # FILTRAGE SALONS
+    # =========================
+
     if message.channel.id not in SALONS_SURVEILLES:
         return
 
@@ -135,15 +209,10 @@ async def on_message(message):
     except Exception as e:
         print("Suppression impossible :", e)
 
-    scores = charger_scores()
-
-    user_id = str(message.author.id)
-
     if user_id not in scores:
         scores[user_id] = 0
 
     scores[user_id] += score
-
     total = scores[user_id]
 
     sauvegarder_scores(scores)
@@ -158,61 +227,17 @@ async def on_message(message):
             timestamp=datetime.utcnow()
         )
 
-        embed.add_field(
-            name="Utilisateur",
-            value=f"{message.author} ({message.author.id})",
-            inline=False
-        )
-
-        embed.add_field(
-            name="Serveur",
-            value=message.guild.name,
-            inline=False
-        )
-
-        embed.add_field(
-            name="Salon",
-            value=message.channel.mention,
-            inline=False
-        )
-
-        embed.add_field(
-            name="Raison",
-            value=reason,
-            inline=False
-        )
-
-        embed.add_field(
-            name="Score ajouté",
-            value=str(score),
-            inline=True
-        )
-
-        embed.add_field(
-            name="Score total",
-            value=str(total),
-            inline=True
-        )
-
-        embed.add_field(
-            name="Message",
-            value=message.content[:1000],
-            inline=False
-        )
+        embed.add_field(name="Utilisateur", value=f"{message.author} ({message.author.id})", inline=False)
+        embed.add_field(name="Salon", value=message.channel.mention, inline=False)
+        embed.add_field(name="Raison", value=reason, inline=False)
+        embed.add_field(name="Score ajouté", value=str(score), inline=True)
+        embed.add_field(name="Score total", value=str(total), inline=True)
+        embed.add_field(name="Message", value=message.content[:1000], inline=False)
 
         if total >= SEUIL_CRITIQUE:
-            embed.add_field(
-                name="⚠️ Alerte critique",
-                value="Utilisateur à surveiller.",
-                inline=False
-            )
-
+            embed.add_field(name="⚠️ CRITIQUE", value="Utilisateur très toxique", inline=False)
         elif total >= SEUIL_ALERTE:
-            embed.add_field(
-                name="⚠️ Alerte",
-                value="Score élevé détecté.",
-                inline=False
-            )
+            embed.add_field(name="⚠️ ALERTE", value="Surveillance recommandée", inline=False)
 
         await report_channel.send(embed=embed)
 
