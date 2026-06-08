@@ -11,7 +11,7 @@ from flask import Flask
 from dotenv import load_dotenv
 
 # =========================
-# FLASK
+# FLASK (Render keep alive)
 # =========================
 
 app = Flask(__name__)
@@ -39,9 +39,7 @@ JSON_FILE = "toxicite.json"
 
 MISTRAL_MODEL = "mistral-small-latest"
 
-# =========================
-# 👑 FONDATEURS (IMPORTANT FIX)
-# =========================
+# 👑 FONDATEURS
 FONDATEURS = {
     "1275136312935977013",
     "1272599276538691750"
@@ -57,7 +55,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 # =========================
-# DISCORD
+# DISCORD INTENTS (IMPORTANT FIX)
 # =========================
 
 intents = discord.Intents.default()
@@ -68,7 +66,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# REPORT CACHE
+# REPORT CHANNEL CACHE
 # =========================
 
 report_channel_cache = None
@@ -86,7 +84,7 @@ async def get_report_channel():
         return None
 
 # =========================
-# JSON SCORES
+# JSON SAFE
 # =========================
 
 def charger_scores():
@@ -106,7 +104,7 @@ def sauvegarder_scores(data):
         pass
 
 # =========================
-# NORMALISATION
+# TEXT NORMALISATION
 # =========================
 
 def normaliser_texte(text: str):
@@ -120,20 +118,17 @@ def normaliser_texte(text: str):
     return text.strip()
 
 # =========================
-# FILTRE RAPIDE
+# FILTER SIMPLE
 # =========================
 
-HATE = [
-    "connard", "fdp", "pute", "encule",
-    "retourne dans ton pays"
-]
+HATE = ["connard", "fdp", "pute", "encule"]
 
 def hard_filter(text):
     t = normaliser_texte(text)
     return any(x in t for x in HATE)
 
 # =========================
-# IA MISTRAL
+# IA MISTRAL SAFE
 # =========================
 
 def analyser_message_ia(content: str):
@@ -150,7 +145,7 @@ def analyser_message_ia(content: str):
         payload = {
             "model": MISTRAL_MODEL,
             "messages": [
-                {"role": "system", "content": "Réponds uniquement en JSON {delete,score,reason}"},
+                {"role": "system", "content": "Répond uniquement JSON {delete,score,reason}"},
                 {"role": "user", "content": content}
             ],
             "temperature": 0.2
@@ -188,13 +183,18 @@ def analyser_message(content: str):
     return {"delete": False, "score": 0, "reason": "fallback"}
 
 # =========================
-# BOT
+# BOT READY
 # =========================
 
 @client.event
 async def on_ready():
-    print(f"Connecté : {client.user}")
+    print("BOT CONNECTÉ ✔")
+    print("USER:", client.user)
     print("FONDATEURS:", FONDATEURS)
+
+# =========================
+# ON MESSAGE
+# =========================
 
 @client.event
 async def on_message(message):
@@ -208,13 +208,13 @@ async def on_message(message):
     scores = charger_scores()
 
     # =========================
-    # SALON UNIQUE COMMANDES
+    # SALON COMMANDES
     # =========================
     if message.channel.id != SALON_REPORT:
         return
 
     # =========================
-    # 📊 !score
+    # !score
     # =========================
     if content.lower() == "!score":
 
@@ -233,12 +233,12 @@ async def on_message(message):
         return
 
     # =========================
-    # 🧹 !reset (FIX PERMISSIONS)
+    # !reset (SECURE)
     # =========================
     if content.lower().startswith("!reset"):
 
         if str(message.author.id) not in FONDATEURS:
-            await message.channel.send("🔒 Tu n'as pas les permissions.")
+            await message.channel.send("🔒 Pas permission.")
             return
 
         args = content.split()
@@ -246,7 +246,7 @@ async def on_message(message):
         if len(args) == 1:
             scores[uid] = 0
             sauvegarder_scores(scores)
-            await message.channel.send("✅ Ton score reset.")
+            await message.channel.send("✅ Reset OK")
             return
 
         if len(args) == 2:
@@ -254,7 +254,7 @@ async def on_message(message):
                 target = args[1].replace("<@", "").replace(">", "").replace("!", "")
                 scores[target] = 0
                 sauvegarder_scores(scores)
-                await message.channel.send("✅ User reset.")
+                await message.channel.send("✅ User reset")
             except:
                 await message.channel.send("❌ erreur")
             return
@@ -299,12 +299,13 @@ async def on_message(message):
             pass
 
 # =========================
-# RUN
+# RUN (RENDER FIX)
 # =========================
 
 def run_bot():
     client.run(DISCORD_TOKEN)
 
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
     threading.Thread(target=run_bot).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    app.run(host="0.0.0.0", port=port)
