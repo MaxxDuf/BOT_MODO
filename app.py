@@ -39,8 +39,11 @@ JSON_FILE = "toxicite.json"
 
 MISTRAL_MODEL = "mistral-small-latest"
 
+# =========================
+# 👑 FONDATEURS (IMPORTANT FIX)
+# =========================
 FONDATEURS = {
-    123456789012345678  # <-- remplace par TON ID
+    "TON_ID_DISCORD_ICI"   # <-- mets ton ID en string
 }
 
 # =========================
@@ -64,7 +67,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# FLASK REPORT CACHE
+# REPORT CACHE
 # =========================
 
 report_channel_cache = None
@@ -121,7 +124,6 @@ def normaliser_texte(text: str):
 
 HATE = [
     "connard", "fdp", "pute", "encule",
-    "sale noir", "sale blanc",
     "retourne dans ton pays"
 ]
 
@@ -144,21 +146,10 @@ def analyser_message_ia(content: str):
             "Content-Type": "application/json"
         }
 
-        system_prompt = """
-Tu es un modérateur Discord.
-
-Répond UNIQUEMENT en JSON:
-{
-  "delete": true/false,
-  "score": 0-3,
-  "reason": "courte raison"
-}
-"""
-
         payload = {
             "model": MISTRAL_MODEL,
             "messages": [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": "Réponds uniquement en JSON {delete,score,reason}"},
                 {"role": "user", "content": content}
             ],
             "temperature": 0.2
@@ -196,12 +187,13 @@ def analyser_message(content: str):
     return {"delete": False, "score": 0, "reason": "fallback"}
 
 # =========================
-# BOT EVENTS
+# BOT
 # =========================
 
 @client.event
 async def on_ready():
     print(f"Connecté : {client.user}")
+    print("FONDATEURS:", FONDATEURS)
 
 @client.event
 async def on_message(message):
@@ -221,7 +213,7 @@ async def on_message(message):
         return
 
     # =========================
-    # !score
+    # 📊 !score
     # =========================
     if content.lower() == "!score":
 
@@ -240,12 +232,12 @@ async def on_message(message):
         return
 
     # =========================
-    # !reset
+    # 🧹 !reset (FIX PERMISSIONS)
     # =========================
     if content.lower().startswith("!reset"):
 
-        if message.author.id not in FONDATEURS:
-            await message.channel.send("🔒 pas permission")
+        if str(message.author.id) not in FONDATEURS:
+            await message.channel.send("🔒 Tu n'as pas les permissions.")
             return
 
         args = content.split()
@@ -253,7 +245,7 @@ async def on_message(message):
         if len(args) == 1:
             scores[uid] = 0
             sauvegarder_scores(scores)
-            await message.channel.send("✅ reset ok")
+            await message.channel.send("✅ Ton score reset.")
             return
 
         if len(args) == 2:
@@ -261,7 +253,7 @@ async def on_message(message):
                 target = args[1].replace("<@", "").replace(">", "").replace("!", "")
                 scores[target] = 0
                 sauvegarder_scores(scores)
-                await message.channel.send("✅ user reset")
+                await message.channel.send("✅ User reset.")
             except:
                 await message.channel.send("❌ erreur")
             return
