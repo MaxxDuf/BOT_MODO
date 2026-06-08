@@ -39,6 +39,11 @@ JSON_FILE = "toxicite.json"
 
 MISTRAL_MODEL = "mistral-small-latest"
 
+# 👑 FONDATEURS (REMPLACE PAR TES IDS)
+FONDATEURS = {
+    123456789012345678
+}
+
 # =========================
 # ENV
 # =========================
@@ -60,7 +65,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# CACHE REPORT CHANNEL
+# REPORT CACHE
 # =========================
 
 report_channel_cache = None
@@ -68,7 +73,7 @@ report_channel_cache = None
 async def get_report_channel():
     global report_channel_cache
 
-    if report_channel_cache is not None:
+    if report_channel_cache:
         return report_channel_cache
 
     try:
@@ -76,11 +81,11 @@ async def get_report_channel():
         report_channel_cache = channel
         return channel
     except Exception as e:
-        print("❌ Erreur fetch_channel report:", e)
+        print("❌ report channel error:", e)
         return None
 
 # =========================
-# JSON SAFE
+# JSON
 # =========================
 
 def charger_scores():
@@ -114,7 +119,7 @@ def normaliser_texte(text: str):
     return text.strip()
 
 # =========================
-# FILTRE SIMPLE (SECURITE RAPIDE)
+# FILTRE RAPIDE
 # =========================
 
 HATE = [
@@ -146,8 +151,8 @@ def analyser_message_ia(content: str):
 
         system_prompt = """
 Tu es un modérateur Discord.
+Répond UNIQUEMENT en JSON:
 
-Répond UNIQUEMENT en JSON valide:
 {
   "delete": true/false,
   "score": 0-3,
@@ -155,9 +160,8 @@ Répond UNIQUEMENT en JSON valide:
 }
 
 Règles:
-- delete=true si haine, insultes, harcèlement, discrimination
-- score 3 = très grave
-- score 1-2 = léger
+- delete=true si haine / harcèlement / discrimination
+- score 3 = grave
 - score 0 = ok
 """
 
@@ -183,38 +187,27 @@ Règles:
         return json.loads(text)
 
     except Exception as e:
-        print("❌ IA Mistral erreur:", e)
+        print("❌ IA error:", e)
         return None
 
 # =========================
-# ANALYSE PRINCIPALE
+# ANALYSE
 # =========================
 
 def analyser_message(content: str):
 
-    # sécurité locale immédiate
     if hard_filter(content):
-        return {
-            "delete": True,
-            "score": 3,
-            "reason": "contenu haineux (filtre local)"
-        }
+        return {"delete": True, "score": 3, "reason": "filtre local"}
 
-    # IA
     result = analyser_message_ia(content)
 
     if result:
         return result
 
-    # fallback
-    return {
-        "delete": False,
-        "score": 0,
-        "reason": "clean (fallback)"
-    }
+    return {"delete": False, "score": 0, "reason": "fallback"}
 
 # =========================
-# EVENTS
+# BOT
 # =========================
 
 @client.event
@@ -230,10 +223,64 @@ async def on_message(message):
     if message.channel.id not in SALONS_SURVEILLES:
         return
 
-    scores = charger_scores()
+    content = message.content.strip()
     uid = str(message.author.id)
 
-    result = analyser_message(message.content)
+    scores = charger_scores()
+
+    # =========================
+    # COMMANDES ADMIN
+    # =========================
+
+    if content.lower().startswith("!reset"):
+
+        if message.author.id not in FONDATEURS:
+            await message.channel.send("❌ Pas permission.")
+            return
+
+        args = content.split()
+
+        if len(args) == 1:
+            scores[uid] = 0
+            sauvegarder_scores(scores)
+            await message.channel.send("✅ Ton score reset.")
+            return
+
+        if len(args) == 2:
+            try:
+                target = args[1].replace("<@", "").replace(">", "")
+                scores[target] = 0
+                sauvegarder_scores(scores)
+                await message.channel.send("✅ Score user reset.")
+            except:
+                await message.channel.send("❌ erreur")
+            return
+
+    if content.lower() == "!score":
+
+        if message.author.id not in FONDATEURS:
+            await message.channel.send("❌ Pas permission.")
+            return
+
+        if not scores:
+            await message.channel.send("📊 Aucun score.")
+            return
+
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+        msg = "📊 Scores :\n"
+
+        for user_id, score in sorted_scores[:15]:
+            msg += f"- <@{user_id}> : {score}\n"
+
+        await message.channel.send(msg)
+        return
+
+    # =========================
+    # MODÉRATION
+    # =========================
+
+    result = analyser_message(content)
 
     if not result["delete"]:
         return
@@ -244,7 +291,6 @@ async def on_message(message):
         pass
 
     scores[uid] = scores.get(uid, 0) + result["score"]
-    total = scores[uid]
     sauvegarder_scores(scores)
 
     report = await get_report_channel()
@@ -257,15 +303,15 @@ async def on_message(message):
                 timestamp=datetime.utcnow()
             )
 
-            embed.add_field(name="Utilisateur", value=str(message.author), inline=False)
+            embed.add_field(name="User", value=str(message.author), inline=False)
             embed.add_field(name="Raison", value=result["reason"], inline=False)
-            embed.add_field(name="Score total", value=str(total), inline=True)
-            embed.add_field(name="Message", value=message.content[:1000], inline=False)
+            embed.add_field(name="Score", value=str(scores[uid]), inline=True)
+            embed.add_field(name="Message", value=content[:1000], inline=False)
 
             await report.send(embed=embed)
 
         except Exception as e:
-            print("❌ Erreur report:", e)
+            print("❌ report error:", e)
 
 # =========================
 # RUN
