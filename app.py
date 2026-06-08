@@ -11,7 +11,7 @@ from flask import Flask
 from dotenv import load_dotenv
 
 # =========================
-# FLASK (Render keep alive)
+# FLASK
 # =========================
 
 app = Flask(__name__)
@@ -39,7 +39,6 @@ JSON_FILE = "toxicite.json"
 
 MISTRAL_MODEL = "mistral-small-latest"
 
-# 👑 FONDATEURS
 FONDATEURS = {
     "1275136312935977013",
     "1272599276538691750"
@@ -55,7 +54,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 # =========================
-# DISCORD INTENTS (IMPORTANT FIX)
+# DISCORD
 # =========================
 
 intents = discord.Intents.default()
@@ -66,7 +65,7 @@ intents.members = True
 client = discord.Client(intents=intents)
 
 # =========================
-# REPORT CHANNEL CACHE
+# REPORT CHANNEL
 # =========================
 
 report_channel_cache = None
@@ -84,7 +83,7 @@ async def get_report_channel():
         return None
 
 # =========================
-# JSON SAFE
+# JSON
 # =========================
 
 def charger_scores():
@@ -104,7 +103,7 @@ def sauvegarder_scores(data):
         pass
 
 # =========================
-# TEXT NORMALISATION
+# TEXT CLEAN
 # =========================
 
 def normaliser_texte(text: str):
@@ -118,7 +117,7 @@ def normaliser_texte(text: str):
     return text.strip()
 
 # =========================
-# FILTER SIMPLE
+# FILTRE RAPIDE
 # =========================
 
 HATE = ["connard", "fdp", "pute", "encule"]
@@ -128,7 +127,7 @@ def hard_filter(text):
     return any(x in t for x in HATE)
 
 # =========================
-# IA MISTRAL SAFE
+# IA MISTRAL
 # =========================
 
 def analyser_message_ia(content: str):
@@ -183,17 +182,16 @@ def analyser_message(content: str):
     return {"delete": False, "score": 0, "reason": "fallback"}
 
 # =========================
-# BOT READY
+# READY
 # =========================
 
 @client.event
 async def on_ready():
     print("BOT CONNECTÉ ✔")
-    print("USER:", client.user)
-    print("FONDATEURS:", FONDATEURS)
+    print(client.user)
 
 # =========================
-# ON MESSAGE
+# MAIN LOGIC
 # =========================
 
 @client.event
@@ -208,14 +206,51 @@ async def on_message(message):
     scores = charger_scores()
 
     # =========================
-    # SALON COMMANDES
+    # 1) MODÉRATION (PRIORITÉ ABSOLUE)
+    # =========================
+    if message.channel.id in SALONS_SURVEILLES:
+
+        result = analyser_message(content)
+
+        if result and result.get("delete"):
+
+            try:
+                await message.delete()
+            except:
+                pass
+
+            scores[uid] = scores.get(uid, 0) + int(result.get("score", 0))
+            sauvegarder_scores(scores)
+
+            report = await get_report_channel()
+
+            if report:
+                try:
+                    embed = discord.Embed(
+                        title="🚨 MODÉRATION IA",
+                        color=discord.Color.red(),
+                        timestamp=datetime.utcnow()
+                    )
+
+                    embed.add_field(name="User", value=str(message.author), inline=False)
+                    embed.add_field(name="Raison", value=result.get("reason", "unknown"), inline=False)
+                    embed.add_field(name="Score", value=str(scores[uid]), inline=True)
+                    embed.add_field(name="Message", value=content[:1000], inline=False)
+
+                    await report.send(embed=embed)
+
+                except:
+                    pass
+
+            return
+
+    # =========================
+    # 2) COMMANDES (UNIQUEMENT SALON REPORT)
     # =========================
     if message.channel.id != SALON_REPORT:
         return
 
-    # =========================
-    # !score
-    # =========================
+    # 📊 SCORE
     if content.lower() == "!score":
 
         if not scores:
@@ -232,9 +267,7 @@ async def on_message(message):
         await message.channel.send(msg)
         return
 
-    # =========================
-    # !reset (SECURE)
-    # =========================
+    # 🧹 RESET
     if content.lower().startswith("!reset"):
 
         if str(message.author.id) not in FONDATEURS:
@@ -259,47 +292,8 @@ async def on_message(message):
                 await message.channel.send("❌ erreur")
             return
 
-    # =========================
-    # MODERATION IA
-    # =========================
-    if message.channel.id not in SALONS_SURVEILLES:
-        return
-
-    result = analyser_message(content)
-
-    if not result.get("delete"):
-        return
-
-    try:
-        await message.delete()
-    except:
-        pass
-
-    scores[uid] = scores.get(uid, 0) + result.get("score", 0)
-    sauvegarder_scores(scores)
-
-    report = await get_report_channel()
-
-    if report:
-        try:
-            embed = discord.Embed(
-                title="🚨 MODÉRATION IA",
-                color=discord.Color.red(),
-                timestamp=datetime.utcnow()
-            )
-
-            embed.add_field(name="User", value=str(message.author), inline=False)
-            embed.add_field(name="Raison", value=result.get("reason", "unknown"), inline=False)
-            embed.add_field(name="Score", value=str(scores[uid]), inline=True)
-            embed.add_field(name="Message", value=content[:1000], inline=False)
-
-            await report.send(embed=embed)
-
-        except:
-            pass
-
 # =========================
-# RUN (RENDER FIX)
+# RUN
 # =========================
 
 def run_bot():
